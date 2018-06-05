@@ -5,10 +5,12 @@
 #include <rte_ip.h>
 #include <rte_mbuf.h>
 #include <string>
+#include <thread>
 #include "eth_helpers.h"
 
 #include <gflags/gflags.h>
-DEFINE_uint64(is_sender, 0, "is_sender");
+DEFINE_uint64(is_sender, 0, "Is this process the sender?");
+DEFINE_uint64(num_threads, 1, "Number of sender threads");
 
 static inline void rt_assert(bool condition, std::string throw_str) {
   if (unlikely(!condition)) throw std::runtime_error(throw_str);
@@ -29,8 +31,6 @@ static constexpr size_t kAppTxBatchSize = 32;
 static constexpr size_t kAppNumMbufs = 8191;
 static constexpr size_t kAppNumCacheMbufs = 32;
 
-static constexpr size_t kAppNumRxQueues = 1;
-static constexpr size_t kAppNumTxQueues = 1;
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
@@ -45,7 +45,7 @@ static constexpr size_t kAppMbufSize =
     (2048 + static_cast<uint32_t>(sizeof(struct rte_mbuf)) +
      RTE_PKTMBUF_HEADROOM);
 
-void send_packets(struct rte_mempool *pktmbuf_pool) {
+void send_packets(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
   rte_mbuf *tx_mbufs[kAppTxBatchSize];
   for (size_t i = 0; i < kAppTxBatchSize; i++) {
     tx_mbufs[i] = rte_pktmbuf_alloc(pktmbuf_pool);
@@ -70,16 +70,17 @@ void send_packets(struct rte_mempool *pktmbuf_pool) {
   }
 
   size_t nb_tx_new =
-      rte_eth_tx_burst(kAppPortId, kAppTxQueueId, tx_mbufs, kAppTxBatchSize);
+      rte_eth_tx_burst(kAppPortId, thread_id, tx_mbufs, kAppTxBatchSize);
 
   for (size_t i = nb_tx_new; i < kAppTxBatchSize; i++) {
     rte_pktmbuf_free(tx_mbufs[i]);
   }
 }
 
-void receive_packets() {
+void receive_packets(size_t thread_id) {
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
-  size_t nb_rx = rte_eth_rx_burst(kAppPortId, 0, rx_pkts, kAppRxBatchSize);
+  size_t nb_rx =
+      rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
   if (nb_rx > 0) printf("nb_rx = %zu\n", nb_rx);
   for (size_t i = 0; i < nb_rx; i++) rte_pktmbuf_free(rx_pkts[i]);
 }
@@ -95,27 +96,25 @@ int main(int argc, char **argv) {
   uint16_t num_ports = rte_eth_dev_count_avail();
   rt_assert(num_ports > kAppPortId, "Too few ports");
 
-  rte_mempool *pktmbuf_pool =
-      rte_pktmbuf_pool_create("mbuf_pool", kAppNumMbufs, kAppNumCacheMbufs, 0,
-                              kAppMbufSize, kAppNumaNode);
-  rt_assert(pktmbuf_pool != nullptr, "Failed to create mempool");
+  // Create per-thread RX and TX queues
+  rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
+                        nullptr);
 
-  struct ether_addr mac;
-  rte_eth_macaddr_get(kAppPortId, &mac);
-  printf("Ether addr = %s\n", mac_to_string(mac.addr_bytes).c_str());
+  auto *mempools = new rte_mempool *[FLAGS_num_threads];
 
-  struct rte_eth_conf port_conf;
-  memset(&port_conf, 0, sizeof(port_conf));
-  port_conf.rxmode.max_rx_pkt_len = ETHER_MAX_VLAN_FRAME_LEN;
-  rte_eth_dev_configure(kAppPortId, kAppNumRxQueues, kAppNumTxQueues,
-                        &port_conf);
+  for (size_t i = 0; i < FLAGS_num_threads; i++) {
+    mempools[i] = rte_pktmbuf_pool_create("", kAppNumMbufs, kAppNumCacheMbufs,
+                                          0, kAppMbufSize, kAppNumaNode);
+    rt_assert(mempools[i] != nullptr, "Failed to create mempool");
 
-  struct rte_eth_txconf *tx_conf = nullptr;
-  struct rte_eth_rxconf *rx_conf = nullptr;
-  rte_eth_rx_queue_setup(kAppPortId, kAppRxQueueId, kAppNumRingDesc,
-                         kAppNumaNode, rx_conf, pktmbuf_pool);
-  rte_eth_tx_queue_setup(kAppPortId, kAppTxQueueId, kAppNumRingDesc,
-                         kAppNumaNode, tx_conf);
+    ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
+                                 nullptr, mempools[i]);
+    rt_assert(ret == 0, "Failed to setup RX queue");
+
+    ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
+                                 nullptr);
+    rt_assert(ret == 0, "Faield to setup TX queue");
+  }
 
   ret = rte_eth_dev_set_mtu(kAppPortId, kAppMTU);
   rt_assert(ret >= 0, "Failed to set MTU");
@@ -131,8 +130,14 @@ int main(int argc, char **argv) {
   printf("Link bandwidth = %u Mbps\n", link.link_speed);
 
   // rte_eth_promiscuous_enable(kAppPortId);
-
-  while (true) {
-    FLAGS_is_sender == 1 ? send_packets(pktmbuf_pool) : receive_packets();
+  auto thread_arr = new std::thread[FLAGS_num_threads];
+  for (size_t i = 0; i < FLAGS_num_threads; i++) {
+    if (FLAGS_is_sender == 0) {
+      thread_arr[i] = std::thread(receive_packets, i);
+    } else {
+      thread_arr[i] = std::thread(send_packets, mempools[i], i);
+    }
   }
+
+  for (size_t i = 0; i < FLAGS_num_threads; i++) thread_arr[i].join();
 }
