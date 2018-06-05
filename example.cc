@@ -129,7 +129,7 @@ int main(int argc, char **argv) {
   rt_assert(link.link_speed != ETH_SPEED_NUM_NONE, "Failed to get bw");
   printf("Link bandwidth = %u Mbps\n", link.link_speed);
 
-  rte_eth_promiscuous_enable(kAppPortId);
+  // rte_eth_promiscuous_enable(kAppPortId);
 
   while (true) {
     FLAGS_is_sender == 1 ? send_packets(pktmbuf_pool) : receive_packets();
