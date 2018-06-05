@@ -81,6 +81,7 @@ void receive_packets() {
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
   size_t nb_rx = rte_eth_rx_burst(kAppPortId, 0, rx_pkts, kAppRxBatchSize);
   if (nb_rx > 0) printf("nb_rx = %zu\n", nb_rx);
+  for (size_t i = 0; i < nb_rx; i++) rte_pktmbuf_free(rx_pkts[i]);
 }
 
 int main(int argc, char **argv) {
