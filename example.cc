@@ -115,9 +115,13 @@ int main(int argc, char **argv) {
 
   eth_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
   eth_conf.rxmode.max_rx_pkt_len = ETHER_MAX_LEN;
-  eth_conf.rxmode.hw_vlan_filter = 1;
-  eth_conf.rxmode.hw_vlan_strip = 1;
+  eth_conf.rxmode.ignore_offload_bitfield = 1;  // Use offloads below instead
+  eth_conf.rxmode.offloads = 0;
+
   eth_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+  eth_conf.txmode.offloads =
+      (DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_MBUF_FAST_FREE);
+
   eth_conf.fdir_conf.mode = RTE_FDIR_MODE_PERFECT;
   eth_conf.fdir_conf.pballoc = RTE_FDIR_PBALLOC_64K;
   eth_conf.fdir_conf.status = RTE_FDIR_NO_REPORT_STATUS;
@@ -140,8 +144,8 @@ int main(int argc, char **argv) {
   eth_tx_conf.tx_thresh.wthresh = 0;
   eth_tx_conf.tx_free_thresh = 0;
   eth_tx_conf.tx_rs_thresh = 0;
-  eth_tx_conf.txq_flags = (ETH_TXQ_FLAGS_NOREFCOUNT | ETH_TXQ_FLAGS_NOMULTMEMP |
-                           ETH_TXQ_FLAGS_NOOFFLOADS);
+  eth_tx_conf.txq_flags = ETH_TXQ_FLAGS_IGNORE;  // Use offloads below instead
+  eth_tx_conf.offloads = eth_conf.txmode.offloads;
 
   ret = rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
                               &eth_conf);
