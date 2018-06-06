@@ -39,10 +39,10 @@ static constexpr size_t kAppNumCacheMbufs = 32;
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
-uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x07, 0x42};
+uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x12, 0xc2};
 char kDstIP[] = "10.10.1.1";
 
-uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x19, 0x82};
+uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x82};
 char kSrcIP[] = "10.10.1.2";
 
 // Per-element size for the packet buffer memory pool
@@ -114,6 +114,10 @@ int main(int argc, char **argv) {
   memset(&port_conf, 0, sizeof(port_conf));
   rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
                         &port_conf);
+
+  struct ether_addr mac;
+  rte_eth_macaddr_get(kAppPortId, &mac);
+  printf("Ether addr = %s\n", mac_to_string(mac.addr_bytes).c_str());
 
   auto *mempools = new rte_mempool *[FLAGS_num_threads];
 
