@@ -20,6 +20,11 @@ static inline void rt_assert(bool condition) {
   if (unlikely(!condition)) throw std::runtime_error("Error");
 }
 
+inline uint32_t fastrand(uint64_t &seed) {
+  seed = seed * 1103515245 + 12345;
+  return static_cast<uint32_t>(seed >> 32);
+}
+
 static constexpr size_t kAppMTU = 1024;
 static constexpr size_t kAppPortId = 0;
 static constexpr size_t kAppNumaNode = 0;
@@ -47,6 +52,7 @@ static constexpr size_t kAppMbufSize =
 
 void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
   rte_mbuf *tx_mbufs[kAppTxBatchSize];
+  uint64_t seed = 0xdeadbeef;
 
   while (true) {
     for (size_t i = 0; i < kAppTxBatchSize; i++) {
@@ -64,6 +70,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
       gen_eth_header(eth_hdr, kSrcMAC, kDstMAC);
       gen_ipv4_header(ip_hdr, ip_from_str(kSrcIP), ip_from_str(kDstIP),
                       kAppDataSize);
+      ip_hdr->src_ip += (fastrand(seed) & 63);
       gen_udp_header(udp_hdr, 31850, 31850, kAppDataSize);
 
       tx_mbufs[i]->nb_segs = 1;
@@ -86,7 +93,7 @@ void receiver_thread_func(size_t thread_id) {
   while (true) {
     size_t nb_rx =
         rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
-    if (nb_rx > 0) printf("nb_rx = %zu\n", nb_rx);
+    if (nb_rx > 0) printf("Thread %zu: nb_rx = %zu\n", thread_id, nb_rx);
     for (size_t i = 0; i < nb_rx; i++) rte_pktmbuf_free(rx_pkts[i]);
   }
 }
@@ -111,9 +118,12 @@ int main(int argc, char **argv) {
   auto *mempools = new rte_mempool *[FLAGS_num_threads];
 
   for (size_t i = 0; i < FLAGS_num_threads; i++) {
-    mempools[i] = rte_pktmbuf_pool_create("", kAppNumMbufs, kAppNumCacheMbufs,
-                                          0, kAppMbufSize, kAppNumaNode);
-    rt_assert(mempools[i] != nullptr, "Failed to create mempool");
+    std::string pname = "mempool-" + std::to_string(i);
+    mempools[i] =
+        rte_pktmbuf_pool_create(pname.c_str(), kAppNumMbufs, kAppNumCacheMbufs,
+                                0, kAppMbufSize, kAppNumaNode);
+    rt_assert(mempools[i] != nullptr, "Mempool creation failed " +
+                                          std::string(rte_strerror(rte_errno)));
 
     ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  nullptr, mempools[i]);
@@ -121,7 +131,7 @@ int main(int argc, char **argv) {
 
     ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  nullptr);
-    rt_assert(ret == 0, "Faield to setup TX queue");
+    rt_assert(ret == 0, "Failed to setup TX queue");
   }
 
   ret = rte_eth_dev_set_mtu(kAppPortId, kAppMTU);
