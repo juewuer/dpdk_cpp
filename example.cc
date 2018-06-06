@@ -45,6 +45,8 @@ char kDstIP[] = "10.10.1.1";
 uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x82};
 char kSrcIP[] = "10.10.1.2";
 
+uint16_t kBaseUDPPort = 31850;
+
 // Per-element size for the packet buffer memory pool
 static constexpr size_t kAppMbufSize =
     (2048 + static_cast<uint32_t>(sizeof(struct rte_mbuf)) +
@@ -70,8 +72,9 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
       gen_eth_header(eth_hdr, kSrcMAC, kDstMAC);
       gen_ipv4_header(ip_hdr, ip_from_str(kSrcIP), ip_from_str(kDstIP),
                       kAppDataSize);
-      ip_hdr->src_ip += (fastrand(seed) & 63);
-      gen_udp_header(udp_hdr, 31850, 31850, kAppDataSize);
+      gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
+      size_t receiver_thread_id = fastrand(seed) % FLAGS_num_threads;
+      udp_hdr->dst_port += receiver_thread_id;
 
       tx_mbufs[i]->nb_segs = 1;
       tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
@@ -170,6 +173,21 @@ int main(int argc, char **argv) {
     ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  &eth_rx_conf, mempools[i]);
     rt_assert(ret == 0, "Failed to setup RX queue " + std::to_string(i));
+
+    // Receive packets for UDP port kBaseUDPPort + i
+    rte_eth_fdir_filter filter;
+    memset(&filter, 0, sizeof(filter));
+    filter.soft_id = i;
+    filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
+    filter.input.flow.udp4_flow.dst_port = rte_cpu_to_be_16(kBaseUDPPort + i);
+    filter.action.rx_queue = i;
+    filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
+    filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
+
+    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
+                                  RTE_ETH_FILTER_ADD, &filter);
+    rt_assert(ret == 0,
+              "Failed to add fdir entry " + std::string(rte_strerror(errno)));
 
     ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  &eth_tx_conf);
