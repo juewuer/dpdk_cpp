@@ -45,50 +45,56 @@ static constexpr size_t kAppMbufSize =
     (2048 + static_cast<uint32_t>(sizeof(struct rte_mbuf)) +
      RTE_PKTMBUF_HEADROOM);
 
-void send_packets(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
+void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
   rte_mbuf *tx_mbufs[kAppTxBatchSize];
-  for (size_t i = 0; i < kAppTxBatchSize; i++) {
-    tx_mbufs[i] = rte_pktmbuf_alloc(pktmbuf_pool);
-    rt_assert(tx_mbufs[i] != nullptr);
 
-    uint8_t *pkt = rte_pktmbuf_mtod(tx_mbufs[i], uint8_t *);
+  while (true) {
+    for (size_t i = 0; i < kAppTxBatchSize; i++) {
+      tx_mbufs[i] = rte_pktmbuf_alloc(pktmbuf_pool);
+      rt_assert(tx_mbufs[i] != nullptr);
 
-    // For now, don't use DPDK's header defines
-    auto *eth_hdr = reinterpret_cast<eth_hdr_t *>(pkt);
-    auto *ip_hdr = reinterpret_cast<ipv4_hdr_t *>(pkt + sizeof(eth_hdr_t));
-    auto *udp_hdr = reinterpret_cast<udp_hdr_t *>(pkt + sizeof(eth_hdr_t) +
-                                                  sizeof(ipv4_hdr_t));
+      uint8_t *pkt = rte_pktmbuf_mtod(tx_mbufs[i], uint8_t *);
 
-    gen_eth_header(eth_hdr, kSrcMAC, kDstMAC);
-    gen_ipv4_header(ip_hdr, ip_from_str(kSrcIP), ip_from_str(kDstIP),
-                    kAppDataSize);
-    gen_udp_header(udp_hdr, 31850, 31850, kAppDataSize);
+      // For now, don't use DPDK's header defines
+      auto *eth_hdr = reinterpret_cast<eth_hdr_t *>(pkt);
+      auto *ip_hdr = reinterpret_cast<ipv4_hdr_t *>(pkt + sizeof(eth_hdr_t));
+      auto *udp_hdr = reinterpret_cast<udp_hdr_t *>(pkt + sizeof(eth_hdr_t) +
+                                                    sizeof(ipv4_hdr_t));
 
-    tx_mbufs[i]->nb_segs = 1;
-    tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
-    tx_mbufs[i]->data_len = tx_mbufs[i]->pkt_len;
-  }
+      gen_eth_header(eth_hdr, kSrcMAC, kDstMAC);
+      gen_ipv4_header(ip_hdr, ip_from_str(kSrcIP), ip_from_str(kDstIP),
+                      kAppDataSize);
+      gen_udp_header(udp_hdr, 31850, 31850, kAppDataSize);
 
-  size_t nb_tx_new =
-      rte_eth_tx_burst(kAppPortId, thread_id, tx_mbufs, kAppTxBatchSize);
+      tx_mbufs[i]->nb_segs = 1;
+      tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
+      tx_mbufs[i]->data_len = tx_mbufs[i]->pkt_len;
+    }
 
-  for (size_t i = nb_tx_new; i < kAppTxBatchSize; i++) {
-    rte_pktmbuf_free(tx_mbufs[i]);
+    size_t nb_tx_new =
+        rte_eth_tx_burst(kAppPortId, thread_id, tx_mbufs, kAppTxBatchSize);
+
+    for (size_t i = nb_tx_new; i < kAppTxBatchSize; i++) {
+      rte_pktmbuf_free(tx_mbufs[i]);
+    }
   }
 }
 
-void receive_packets(size_t thread_id) {
+void receiver_thread_func(size_t thread_id) {
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
-  size_t nb_rx =
-      rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
-  if (nb_rx > 0) printf("nb_rx = %zu\n", nb_rx);
-  for (size_t i = 0; i < nb_rx; i++) rte_pktmbuf_free(rx_pkts[i]);
+
+  while (true) {
+    size_t nb_rx =
+        rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
+    if (nb_rx > 0) printf("nb_rx = %zu\n", nb_rx);
+    for (size_t i = 0; i < nb_rx; i++) rte_pktmbuf_free(rx_pkts[i]);
+  }
 }
 
 int main(int argc, char **argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  const char *rte_argv[] = {"rc", "-c", "1", "-n", "1", nullptr};
+  const char *rte_argv[] = {"-c", "1", "-n", "4", nullptr};
   int rte_argc = static_cast<int>(sizeof(argv) / sizeof(argv[0])) - 1;
   int ret = rte_eal_init(rte_argc, const_cast<char **>(rte_argv));
   rt_assert(ret >= 0, "rte_eal_init failed");
@@ -97,8 +103,10 @@ int main(int argc, char **argv) {
   rt_assert(num_ports > kAppPortId, "Too few ports");
 
   // Create per-thread RX and TX queues
+  struct rte_eth_conf port_conf;
+  memset(&port_conf, 0, sizeof(port_conf));
   rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
-                        nullptr);
+                        &port_conf);
 
   auto *mempools = new rte_mempool *[FLAGS_num_threads];
 
@@ -133,9 +141,9 @@ int main(int argc, char **argv) {
   auto thread_arr = new std::thread[FLAGS_num_threads];
   for (size_t i = 0; i < FLAGS_num_threads; i++) {
     if (FLAGS_is_sender == 0) {
-      thread_arr[i] = std::thread(receive_packets, i);
+      thread_arr[i] = std::thread(receiver_thread_func, i);
     } else {
-      thread_arr[i] = std::thread(send_packets, mempools[i], i);
+      thread_arr[i] = std::thread(sender_thread_func, mempools[i], i);
     }
   }
 
