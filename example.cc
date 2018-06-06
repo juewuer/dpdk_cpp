@@ -34,7 +34,7 @@ static constexpr size_t kAppNumRingDesc = 256;
 static constexpr size_t kAppRxBatchSize = 32;
 static constexpr size_t kAppTxBatchSize = 32;
 static constexpr size_t kAppNumMbufs = 8191;
-static constexpr size_t kAppNumCacheMbufs = 32;
+static constexpr size_t kAppZeroCacheMbufs = 0;
 
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
@@ -110,10 +110,42 @@ int main(int argc, char **argv) {
   rt_assert(num_ports > kAppPortId, "Too few ports");
 
   // Create per-thread RX and TX queues
-  struct rte_eth_conf port_conf;
-  memset(&port_conf, 0, sizeof(port_conf));
-  rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
-                        &port_conf);
+  rte_eth_conf eth_conf;
+  memset(&eth_conf, 0, sizeof(eth_conf));
+
+  eth_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
+  eth_conf.rxmode.max_rx_pkt_len = ETHER_MAX_LEN;
+  eth_conf.rxmode.hw_vlan_filter = 1;
+  eth_conf.rxmode.hw_vlan_strip = 1;
+  eth_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+  eth_conf.fdir_conf.mode = RTE_FDIR_MODE_PERFECT;
+  eth_conf.fdir_conf.pballoc = RTE_FDIR_PBALLOC_64K;
+  eth_conf.fdir_conf.status = RTE_FDIR_NO_REPORT_STATUS;
+  eth_conf.fdir_conf.mask.dst_port_mask = 0xffff;
+  eth_conf.fdir_conf.drop_queue = 0;
+
+  // XXX: Are these thresh and txq_flags value optimal?
+  rte_eth_rxconf eth_rx_conf;
+  memset(&eth_rx_conf, 0, sizeof(eth_rx_conf));
+  eth_rx_conf.rx_thresh.pthresh = 8;
+  eth_rx_conf.rx_thresh.hthresh = 0;
+  eth_rx_conf.rx_thresh.wthresh = 0;
+  eth_rx_conf.rx_free_thresh = 0;
+  eth_rx_conf.rx_drop_en = 0;
+
+  rte_eth_txconf eth_tx_conf;
+  memset(&eth_tx_conf, 0, sizeof(eth_tx_conf));
+  eth_tx_conf.tx_thresh.pthresh = 32;
+  eth_tx_conf.tx_thresh.hthresh = 0;
+  eth_tx_conf.tx_thresh.wthresh = 0;
+  eth_tx_conf.tx_free_thresh = 0;
+  eth_tx_conf.tx_rs_thresh = 0;
+  eth_tx_conf.txq_flags = (ETH_TXQ_FLAGS_NOREFCOUNT | ETH_TXQ_FLAGS_NOMULTMEMP |
+                           ETH_TXQ_FLAGS_NOOFFLOADS);
+
+  ret = rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
+                              &eth_conf);
+  rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
 
   struct ether_addr mac;
   rte_eth_macaddr_get(kAppPortId, &mac);
@@ -122,20 +154,22 @@ int main(int argc, char **argv) {
   auto *mempools = new rte_mempool *[FLAGS_num_threads];
 
   for (size_t i = 0; i < FLAGS_num_threads; i++) {
+    // We won't use DPDK's lcore threads, so mempool cache won't work. Instead,
+    // use per-thread pools with zero cached mbufs
     std::string pname = "mempool-" + std::to_string(i);
     mempools[i] =
-        rte_pktmbuf_pool_create(pname.c_str(), kAppNumMbufs, kAppNumCacheMbufs,
+        rte_pktmbuf_pool_create(pname.c_str(), kAppNumMbufs, kAppZeroCacheMbufs,
                                 0, kAppMbufSize, kAppNumaNode);
     rt_assert(mempools[i] != nullptr, "Mempool creation failed " +
                                           std::string(rte_strerror(rte_errno)));
 
     ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
-                                 nullptr, mempools[i]);
-    rt_assert(ret == 0, "Failed to setup RX queue");
+                                 &eth_rx_conf, mempools[i]);
+    rt_assert(ret == 0, "Failed to setup RX queue " + std::to_string(i));
 
     ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
-                                 nullptr);
-    rt_assert(ret == 0, "Failed to setup TX queue");
+                                 &eth_tx_conf);
+    rt_assert(ret == 0, "Failed to setup TX queue " + std::to_string(i));
   }
 
   ret = rte_eth_dev_set_mtu(kAppPortId, kAppMTU);
