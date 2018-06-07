@@ -39,13 +39,13 @@ static constexpr size_t kAppZeroCacheMbufs = 0;
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
-uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x12, 0xc2};
+uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xff, 0x62};
 char kDstIP[] = "10.10.1.1";
 
-uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x82};
+uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
 char kSrcIP[] = "10.10.1.2";
 
-uint16_t kBaseUDPPort = 31850;
+uint16_t kBaseUDPPort = 3185;
 
 // Per-element size for the packet buffer memory pool
 static constexpr size_t kAppMbufSize =
@@ -73,8 +73,8 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
       gen_ipv4_header(ip_hdr, ip_from_str(kSrcIP), ip_from_str(kDstIP),
                       kAppDataSize);
       gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
-      size_t receiver_thread_id = fastrand(seed) % FLAGS_num_threads;
-      udp_hdr->dst_port += receiver_thread_id;
+      udp_hdr->dst_port = htons(kBaseUDPPort + fastrand(seed) % 2);
+      udp_hdr->src_port = htons(kBaseUDPPort + fastrand(seed) % 2);
 
       tx_mbufs[i]->nb_segs = 1;
       tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
@@ -92,7 +92,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
 void receiver_thread_func(size_t thread_id) {
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
-
+  if (thread_id == 0) return;
   while (true) {
     size_t nb_rx =
         rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
@@ -167,8 +167,8 @@ int main(int argc, char **argv) {
     mempools[i] =
         rte_pktmbuf_pool_create(pname.c_str(), kAppNumMbufs, kAppZeroCacheMbufs,
                                 0, kAppMbufSize, kAppNumaNode);
-    rt_assert(mempools[i] != nullptr, "Mempool creation failed " +
-                                          std::string(rte_strerror(rte_errno)));
+    rt_assert(mempools[i] != nullptr,
+              "Mempool create failed " + std::string(rte_strerror(rte_errno)));
 
     ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  &eth_rx_conf, mempools[i]);
@@ -179,7 +179,7 @@ int main(int argc, char **argv) {
     memset(&filter, 0, sizeof(filter));
     filter.soft_id = i;
     filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
-    filter.input.flow.udp4_flow.dst_port = rte_cpu_to_be_16(kBaseUDPPort + i);
+    filter.input.flow.udp4_flow.dst_port = htons(kBaseUDPPort + i);
     filter.action.rx_queue = i;
     filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
     filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
