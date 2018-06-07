@@ -105,7 +105,7 @@ void receiver_thread_func(size_t thread_id) {
 void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
   struct rte_eth_ntuple_filter ntuple;
   memset(&ntuple, 0, sizeof(ntuple));
-  ntuple.flags = RTE_2TUPLE_FLAGS;
+  ntuple.flags = RTE_5TUPLE_FLAGS;
   ntuple.dst_port = rte_cpu_to_be_16(udp_port);
   ntuple.dst_port_mask = UINT16_MAX;
   ntuple.proto = IPPROTO_UDP;
