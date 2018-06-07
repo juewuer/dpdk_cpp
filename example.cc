@@ -103,18 +103,18 @@ void receiver_thread_func(size_t thread_id) {
 
 // Steer packets received on udp_port to queue_id
 void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
-  // Receive packets for UDP port kBaseUDPPort + i
-  rte_eth_fdir_filter filter;
-  memset(&filter, 0, sizeof(filter));
-  filter.soft_id = queue_id;
-  filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
-  filter.input.flow.udp4_flow.dst_port = htons(udp_port);
-  filter.action.rx_queue = queue_id;
-  filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
-  filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
+  struct rte_eth_ntuple_filter ntuple;
+  memset(&ntuple, 0, sizeof(ntuple));
+  ntuple.flags = RTE_2TUPLE_FLAGS;
+  ntuple.dst_port = rte_cpu_to_be_16(udp_port);
+  ntuple.dst_port_mask = UINT16_MAX;
+  ntuple.proto = IPPROTO_UDP;
+  ntuple.proto_mask = UINT8_MAX;
+  ntuple.priority = 1;
+  ntuple.queue = queue_id;
 
-  int ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
-                                    RTE_ETH_FILTER_ADD, &filter);
+  int ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
+                                    RTE_ETH_FILTER_ADD, &ntuple);
   rt_assert(ret == 0,
             "Failed to add fdir entry " + std::string(rte_strerror(errno)));
 }
@@ -195,6 +195,8 @@ int main(int argc, char **argv) {
     ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  &eth_tx_conf);
     rt_assert(ret == 0, "Failed to setup TX queue " + std::to_string(i));
+
+    add_fdir_filter(i, kBaseUDPPort + i);
   }
 
   ret = rte_eth_dev_set_mtu(kAppPortId, kAppMTU);

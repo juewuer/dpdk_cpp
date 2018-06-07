@@ -6,6 +6,7 @@
 
 static constexpr uint16_t kIPEtherType = 0x800;
 static constexpr uint16_t kIPHdrProtocol = 0x11;
+static_assert(kIPHdrProtocol == IPPROTO_UDP, "");
 
 struct eth_hdr_t {
   uint8_t dst_mac[6];
