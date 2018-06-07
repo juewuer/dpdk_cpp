@@ -121,9 +121,9 @@ int main(int argc, char **argv) {
   eth_conf.rxmode.ignore_offload_bitfield = 1;  // Use offloads below instead
   eth_conf.rxmode.offloads = 0;
 
+  // XXX: ixgbe does not support fast free offload, but i40e does
   eth_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
-  eth_conf.txmode.offloads =
-      (DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_MBUF_FAST_FREE);
+  eth_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS;
 
   eth_conf.fdir_conf.mode = RTE_FDIR_MODE_PERFECT;
   eth_conf.fdir_conf.pballoc = RTE_FDIR_PBALLOC_64K;
