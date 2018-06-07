@@ -76,7 +76,8 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
       gen_ipv4_header(ip_hdr, ip_from_str(kSrcIP), ip_from_str(kDstIP),
                       kAppDataSize);
       gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
-      udp_hdr->dst_port = htons(kBaseUDPPort + fastrand(seed) % 2);
+      udp_hdr->dst_port =
+          htons(kBaseUDPPort + fastrand(seed) % FLAGS_num_threads);
 
       tx_mbufs[i]->nb_segs = 1;
       tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
@@ -113,6 +114,7 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
     filter.soft_id = queue_id;
     filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
     filter.input.flow.udp4_flow.dst_port = rte_cpu_to_be_16(udp_port);
+    filter.input.flow.udp4_flow.ip.dst_ip = ip_from_str(kDstIP);
     filter.action.rx_queue = queue_id;
     filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
     filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
@@ -191,6 +193,18 @@ int main(int argc, char **argv) {
   ret = rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
                               &eth_conf);
   rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
+
+  struct rte_eth_fdir_filter_info fi;
+  memset(&fi, 0, sizeof(fi));
+  fi.info_type = RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT;
+  fi.info.input_set_conf.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
+  fi.info.input_set_conf.inset_size = 2;
+  fi.info.input_set_conf.field[0] = RTE_ETH_INPUT_SET_L3_DST_IP4;
+  fi.info.input_set_conf.field[1] = RTE_ETH_INPUT_SET_L4_UDP_DST_PORT;
+  fi.info.input_set_conf.op = RTE_ETH_INPUT_SET_SELECT;
+  ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
+                                RTE_ETH_FILTER_SET, &fi);
+  rt_assert(ret == 0, "Flow director SET failed");
 
   struct ether_addr mac;
   rte_eth_macaddr_get(kAppPortId, &mac);
