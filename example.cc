@@ -39,6 +39,7 @@ static constexpr size_t kAppZeroCacheMbufs = 0;
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
+// uint8_t kDstMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
 uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xff, 0x62};
 char kDstIP[] = "10.10.1.1";
 
@@ -92,13 +93,30 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
 void receiver_thread_func(size_t thread_id) {
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
-  if (thread_id == 0) return;
   while (true) {
     size_t nb_rx =
         rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
     if (nb_rx > 0) printf("Thread %zu: nb_rx = %zu\n", thread_id, nb_rx);
     for (size_t i = 0; i < nb_rx; i++) rte_pktmbuf_free(rx_pkts[i]);
   }
+}
+
+// Steer packets received on udp_port to queue_id
+void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
+  // Receive packets for UDP port kBaseUDPPort + i
+  rte_eth_fdir_filter filter;
+  memset(&filter, 0, sizeof(filter));
+  filter.soft_id = queue_id;
+  filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
+  filter.input.flow.udp4_flow.dst_port = htons(udp_port);
+  filter.action.rx_queue = queue_id;
+  filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
+  filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
+
+  int ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
+                                    RTE_ETH_FILTER_ADD, &filter);
+  rt_assert(ret == 0,
+            "Failed to add fdir entry " + std::string(rte_strerror(errno)));
 }
 
 int main(int argc, char **argv) {
@@ -173,21 +191,6 @@ int main(int argc, char **argv) {
     ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  &eth_rx_conf, mempools[i]);
     rt_assert(ret == 0, "Failed to setup RX queue " + std::to_string(i));
-
-    // Receive packets for UDP port kBaseUDPPort + i
-    rte_eth_fdir_filter filter;
-    memset(&filter, 0, sizeof(filter));
-    filter.soft_id = i;
-    filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
-    filter.input.flow.udp4_flow.dst_port = htons(kBaseUDPPort + i);
-    filter.action.rx_queue = i;
-    filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
-    filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
-
-    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
-                                  RTE_ETH_FILTER_ADD, &filter);
-    rt_assert(ret == 0,
-              "Failed to add fdir entry " + std::string(rte_strerror(errno)));
 
     ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
                                  &eth_tx_conf);
