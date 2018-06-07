@@ -39,8 +39,8 @@ static constexpr size_t kAppZeroCacheMbufs = 0;
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
-// uint8_t kDstMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xff, 0x62};
+uint8_t kDstMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
+// uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xff, 0x62};
 char kDstIP[] = "10.10.1.1";
 
 uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
@@ -75,7 +75,6 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
                       kAppDataSize);
       gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
       udp_hdr->dst_port = htons(kBaseUDPPort + fastrand(seed) % 2);
-      udp_hdr->src_port = htons(kBaseUDPPort + fastrand(seed) % 2);
 
       tx_mbufs[i]->nb_segs = 1;
       tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
