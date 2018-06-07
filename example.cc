@@ -12,6 +12,8 @@
 DEFINE_uint64(is_sender, 0, "Is this process the sender?");
 DEFINE_uint64(num_threads, 1, "Number of sender threads");
 
+static constexpr bool ki40e = true;  // Is it i40e?
+
 static inline void rt_assert(bool condition, std::string throw_str) {
   if (unlikely(!condition)) throw std::runtime_error(throw_str);
 }
@@ -39,8 +41,8 @@ static constexpr size_t kAppZeroCacheMbufs = 0;
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
-uint8_t kDstMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-// uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xff, 0x62};
+// uint8_t kDstMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
+uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xff, 0x62};
 char kDstIP[] = "10.10.1.1";
 
 uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
@@ -102,18 +104,37 @@ void receiver_thread_func(size_t thread_id) {
 
 // Steer packets received on udp_port to queue_id
 void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
-  struct rte_eth_ntuple_filter ntuple;
-  memset(&ntuple, 0, sizeof(ntuple));
-  ntuple.flags = RTE_5TUPLE_FLAGS;
-  ntuple.dst_port = rte_cpu_to_be_16(udp_port);
-  ntuple.dst_port_mask = UINT16_MAX;
-  ntuple.proto = IPPROTO_UDP;
-  ntuple.proto_mask = UINT8_MAX;
-  ntuple.priority = 1;
-  ntuple.queue = queue_id;
+  int ret;
+  printf("add_fdir_filter queue id %zu, udp port %u\n", queue_id, udp_port);
+  if (ki40e) {
+    // Use fdir filter for i40e (5-tuple not supported)
+    rte_eth_fdir_filter filter;
+    memset(&filter, 0, sizeof(filter));
+    filter.soft_id = queue_id;
+    filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
+    filter.input.flow.udp4_flow.dst_port = rte_cpu_to_be_16(udp_port);
+    filter.action.rx_queue = queue_id;
+    filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
+    filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
 
-  int ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
-                                    RTE_ETH_FILTER_ADD, &ntuple);
+    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
+                                  RTE_ETH_FILTER_ADD, &filter);
+  } else {
+    // Use 5-tuple filter for ixgbe
+    struct rte_eth_ntuple_filter ntuple;
+    memset(&ntuple, 0, sizeof(ntuple));
+    ntuple.flags = RTE_5TUPLE_FLAGS;
+    ntuple.dst_port = rte_cpu_to_be_16(udp_port);
+    ntuple.dst_port_mask = UINT16_MAX;
+    ntuple.proto = IPPROTO_UDP;
+    ntuple.proto_mask = UINT8_MAX;
+    ntuple.priority = 1;
+    ntuple.queue = queue_id;
+
+    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
+                                  RTE_ETH_FILTER_ADD, &ntuple);
+  }
+
   rt_assert(ret == 0,
             "Failed to add fdir entry " + std::string(rte_strerror(errno)));
 }
