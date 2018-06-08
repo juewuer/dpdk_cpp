@@ -231,17 +231,19 @@ int main(int argc, char **argv) {
                               &eth_conf);
   rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
 
-  struct rte_eth_fdir_filter_info fi;
-  memset(&fi, 0, sizeof(fi));
-  fi.info_type = RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT;
-  fi.info.input_set_conf.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
-  fi.info.input_set_conf.inset_size = 2;
-  fi.info.input_set_conf.field[0] = RTE_ETH_INPUT_SET_L3_DST_IP4;
-  fi.info.input_set_conf.field[1] = RTE_ETH_INPUT_SET_L4_UDP_DST_PORT;
-  fi.info.input_set_conf.op = RTE_ETH_INPUT_SET_SELECT;
-  ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
-                                RTE_ETH_FILTER_SET, &fi);
-  rt_assert(ret == 0, "Flow director SET failed");
+  if (ki40e) {
+    struct rte_eth_fdir_filter_info fi;
+    memset(&fi, 0, sizeof(fi));
+    fi.info_type = RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT;
+    fi.info.input_set_conf.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
+    fi.info.input_set_conf.inset_size = 2;
+    fi.info.input_set_conf.field[0] = RTE_ETH_INPUT_SET_L3_DST_IP4;
+    fi.info.input_set_conf.field[1] = RTE_ETH_INPUT_SET_L4_UDP_DST_PORT;
+    fi.info.input_set_conf.op = RTE_ETH_INPUT_SET_SELECT;
+    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
+                                  RTE_ETH_FILTER_SET, &fi);
+    rt_assert(ret == 0, "Flow director SET failed");
+  }
 
   struct ether_addr mac;
   rte_eth_macaddr_get(kAppPortId, &mac);
