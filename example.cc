@@ -36,9 +36,6 @@ static constexpr size_t kAppTxBatchSize = 32;
 static constexpr size_t kAppNumMbufs = 8191;
 static constexpr size_t kAppZeroCacheMbufs = 0;
 
-static constexpr size_t kAppRxQueueId = 0;
-static constexpr size_t kAppTxQueueId = 0;
-
 // uint8_t kServerMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
 uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x02};
 char kServerIP[] = "10.10.1.1";
