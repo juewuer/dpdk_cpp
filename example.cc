@@ -141,6 +141,7 @@ void receiver_thread_func(size_t thread_id) {
              nb_rx);
     }
 
+    for (size_t i = 0; i < nb_rx_new; i++) rte_pktmbuf_free(rx_pkts[i]);
     nb_rx += nb_rx_new;
 
     if (nb_rx >= 1000000) {
