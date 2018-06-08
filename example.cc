@@ -292,6 +292,14 @@ int main(int argc, char **argv) {
     } else {
       thread_arr[i] = std::thread(sender_thread_func, mempools[i], i);
     }
+
+    // Bind thread i to core i
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(i, &cpuset);
+    int rc = pthread_setaffinity_np(thread_arr[i].native_handle(),
+                                    sizeof(cpu_set_t), &cpuset);
+    rt_assert(rc == 0, "Error setting thread affinity");
   }
 
   for (size_t i = 0; i < FLAGS_num_threads; i++) thread_arr[i].join();
