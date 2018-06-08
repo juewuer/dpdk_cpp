@@ -12,8 +12,6 @@
 DEFINE_uint64(is_sender, 0, "Is this process the sender?");
 DEFINE_uint64(num_threads, 1, "Number of sender threads");
 
-static constexpr bool ki40e = true;  // Is it i40e?
-
 static inline void rt_assert(bool condition, std::string throw_str) {
   if (unlikely(!condition)) throw std::runtime_error(throw_str);
 }
@@ -97,7 +95,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
     }
 
     nb_tx += nb_tx_new;
-    if (nb_tx >= 10000000) {
+    if (nb_tx >= 1000000) {
       clock_gettime(CLOCK_REALTIME, &end);
       double seconds = (end.tv_sec - start.tv_sec) +
                        (end.tv_nsec - start.tv_nsec) / 1000000000.0;
@@ -127,7 +125,7 @@ void receiver_thread_func(size_t thread_id) {
 
     nb_rx += nb_rx_new;
 
-    if (nb_rx >= 10000000) {
+    if (nb_rx >= 1000000) {
       clock_gettime(CLOCK_REALTIME, &end);
       double seconds = (end.tv_sec - start.tv_sec) +
                        (end.tv_nsec - start.tv_nsec) / 1000000000.0;
@@ -143,7 +141,7 @@ void receiver_thread_func(size_t thread_id) {
 // Steer packets received on udp_port to queue_id
 void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
   int ret;
-  if (ki40e) {
+  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_FDIR) == 0) {
     // Use fdir filter for i40e (5-tuple not supported)
     rte_eth_fdir_filter filter;
     memset(&filter, 0, sizeof(filter));
@@ -157,7 +155,8 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
 
     ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
                                   RTE_ETH_FILTER_ADD, &filter);
-  } else {
+  } else if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) ==
+             0) {
     // Use 5-tuple filter for ixgbe
     struct rte_eth_ntuple_filter ntuple;
     memset(&ntuple, 0, sizeof(ntuple));
@@ -171,6 +170,9 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
 
     ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
                                   RTE_ETH_FILTER_ADD, &ntuple);
+  } else {
+    rt_assert(false, "No flow director filters supported");
+    ret = -1;
   }
 
   rt_assert(ret == 0,
@@ -230,7 +232,7 @@ int main(int argc, char **argv) {
                               &eth_conf);
   rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
 
-  if (ki40e) {
+  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_FDIR) == 0) {
     struct rte_eth_fdir_filter_info fi;
     memset(&fi, 0, sizeof(fi));
     fi.info_type = RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT;
@@ -241,7 +243,7 @@ int main(int argc, char **argv) {
     fi.info.input_set_conf.op = RTE_ETH_INPUT_SET_SELECT;
     ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
                                   RTE_ETH_FILTER_SET, &fi);
-    rt_assert(ret == 0, "Flow director SET failed");
+    rt_assert(ret == 0, "Failed to configure flow director fields");
   }
 
   struct ether_addr mac;
