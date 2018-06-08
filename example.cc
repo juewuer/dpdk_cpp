@@ -42,7 +42,7 @@ static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
 // uint8_t kDstMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xff, 0x62};
+uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x02};
 char kDstIP[] = "10.10.1.1";
 
 uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
@@ -59,10 +59,17 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
   rte_mbuf *tx_mbufs[kAppTxBatchSize];
   uint64_t seed = 0xdeadbeef;
 
+  uint32_t src_ip = ip_from_str(kSrcIP);
+  uint32_t dst_ip = ip_from_str(kDstIP);
+
+  struct timespec start, end;
+  clock_gettime(CLOCK_REALTIME, &start);
+  size_t nb_tx = 0;
+
   while (true) {
     for (size_t i = 0; i < kAppTxBatchSize; i++) {
       tx_mbufs[i] = rte_pktmbuf_alloc(pktmbuf_pool);
-      rt_assert(tx_mbufs[i] != nullptr);
+      assert(tx_mbufs[i] != nullptr);
 
       uint8_t *pkt = rte_pktmbuf_mtod(tx_mbufs[i], uint8_t *);
 
@@ -73,8 +80,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
                                                     sizeof(ipv4_hdr_t));
 
       gen_eth_header(eth_hdr, kSrcMAC, kDstMAC);
-      gen_ipv4_header(ip_hdr, ip_from_str(kSrcIP), ip_from_str(kDstIP),
-                      kAppDataSize);
+      gen_ipv4_header(ip_hdr, src_ip, dst_ip, kAppDataSize);
       gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
       udp_hdr->dst_port =
           htons(kBaseUDPPort + fastrand(seed) % FLAGS_num_threads);
@@ -86,20 +92,51 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
     size_t nb_tx_new =
         rte_eth_tx_burst(kAppPortId, thread_id, tx_mbufs, kAppTxBatchSize);
-
     for (size_t i = nb_tx_new; i < kAppTxBatchSize; i++) {
       rte_pktmbuf_free(tx_mbufs[i]);
+    }
+
+    nb_tx += nb_tx_new;
+    if (nb_tx >= 10000000) {
+      clock_gettime(CLOCK_REALTIME, &end);
+      double seconds = (end.tv_sec - start.tv_sec) +
+                       (end.tv_nsec - start.tv_nsec) / 1000000000.0;
+      double mpps = nb_tx / (seconds * 1000000);
+      printf("Thread %zu, TX rate = %.2f Mpps\n", thread_id, mpps);
+
+      clock_gettime(CLOCK_REALTIME, &start);
+      nb_tx = 0;
     }
   }
 }
 
 void receiver_thread_func(size_t thread_id) {
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
+
+  struct timespec start, end;
+  clock_gettime(CLOCK_REALTIME, &start);
+  size_t nb_rx = 0;
+
   while (true) {
-    size_t nb_rx =
+    size_t nb_rx_new =
         rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
-    if (nb_rx > 0) printf("Thread %zu: nb_rx = %zu\n", thread_id, nb_rx);
-    for (size_t i = 0; i < nb_rx; i++) rte_pktmbuf_free(rx_pkts[i]);
+    // if (nb_rx_new > 0) {
+    //   printf("Thread %zu: nb_rx = %zu\n", thread_id, nb_rx_new);
+    // }
+    for (size_t i = 0; i < nb_rx_new; i++) rte_pktmbuf_free(rx_pkts[i]);
+
+    nb_rx += nb_rx_new;
+
+    if (nb_rx >= 10000000) {
+      clock_gettime(CLOCK_REALTIME, &end);
+      double seconds = (end.tv_sec - start.tv_sec) +
+                       (end.tv_nsec - start.tv_nsec) / 1000000000.0;
+      double mpps = nb_rx / (seconds * 1000000);
+      printf("Thread %zu, RX rate = %.2f Mpps\n", thread_id, mpps);
+
+      clock_gettime(CLOCK_REALTIME, &start);
+      nb_rx = 0;
+    }
   }
 }
 
