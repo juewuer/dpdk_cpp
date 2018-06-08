@@ -33,10 +33,12 @@ static constexpr size_t kAppPortId = 0;
 static constexpr size_t kAppNumaNode = 0;
 static constexpr size_t kAppDataSize = 32;  // App-level data size
 
-static constexpr size_t kAppNumRingDesc = 256;
+static constexpr size_t kAppNumRxRingDesc = 4096;
+static constexpr size_t kAppNumTxRingDesc = 128;
 static constexpr size_t kAppRxBatchSize = 32;
 static constexpr size_t kAppTxBatchSize = 32;
-static constexpr size_t kAppNumMbufs = 8191;
+
+static constexpr size_t kAppNumMbufs = (kAppNumRxRingDesc * 2 - 1);
 static constexpr size_t kAppZeroCacheMbufs = 0;
 
 // uint8_t kServerMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
@@ -209,6 +211,13 @@ int main(int argc, char **argv) {
   uint16_t num_ports = rte_eth_dev_count_avail();
   rt_assert(num_ports > kAppPortId, "Too few ports");
 
+  rte_eth_dev_info dev_info;
+  rte_eth_dev_info_get(kAppPortId, &dev_info);
+  rt_assert(dev_info.rx_desc_lim.nb_max >= kAppNumRxRingDesc,
+            "Device RX ring too small");
+  rt_assert(dev_info.tx_desc_lim.nb_max >= kAppNumTxRingDesc,
+            "Device TX ring too small");
+
   // Create per-thread RX and TX queues
   rte_eth_conf eth_conf;
   memset(&eth_conf, 0, sizeof(eth_conf));
@@ -281,11 +290,11 @@ int main(int argc, char **argv) {
     rt_assert(mempools[i] != nullptr,
               "Mempool create failed " + std::string(rte_strerror(rte_errno)));
 
-    ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
+    ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRxRingDesc, kAppNumaNode,
                                  &eth_rx_conf, mempools[i]);
     rt_assert(ret == 0, "Failed to setup RX queue " + std::to_string(i));
 
-    ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumRingDesc, kAppNumaNode,
+    ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumTxRingDesc, kAppNumaNode,
                                  &eth_tx_conf);
     rt_assert(ret == 0, "Failed to setup TX queue " + std::to_string(i));
 
