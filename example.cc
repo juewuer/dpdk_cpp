@@ -12,6 +12,9 @@
 DEFINE_uint64(is_sender, 0, "Is this process the sender?");
 DEFINE_uint64(num_threads, 1, "Number of sender threads");
 
+static constexpr bool kAppTwoSegs = true;
+static constexpr bool kAppVerbose = true;
+
 static inline void rt_assert(bool condition, std::string throw_str) {
   if (unlikely(!condition)) throw std::runtime_error(throw_str);
 }
@@ -28,7 +31,7 @@ inline uint32_t fastrand(uint64_t &seed) {
 static constexpr size_t kAppMTU = 1024;
 static constexpr size_t kAppPortId = 0;
 static constexpr size_t kAppNumaNode = 0;
-static constexpr size_t kAppDataSize = 16;  // App-level data size
+static constexpr size_t kAppDataSize = 32;  // App-level data size
 
 static constexpr size_t kAppNumRingDesc = 256;
 static constexpr size_t kAppRxBatchSize = 32;
@@ -51,7 +54,9 @@ static constexpr size_t kAppMbufSize =
      RTE_PKTMBUF_HEADROOM);
 
 void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
-  rte_mbuf *tx_mbufs[kAppTxBatchSize];
+  // mbufs for first and second segment
+  rte_mbuf *tx_mbufs_1[kAppTxBatchSize], *tx_mbufs_2[kAppTxBatchSize];
+
   uint64_t seed = 0xdeadbeef;
 
   uint32_t client_ip = ip_from_str(kClientIP);
@@ -63,10 +68,11 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
   while (true) {
     for (size_t i = 0; i < kAppTxBatchSize; i++) {
-      tx_mbufs[i] = rte_pktmbuf_alloc(pktmbuf_pool);
-      assert(tx_mbufs[i] != nullptr);
+      // XXX: raw_alloc?
+      tx_mbufs_1[i] = rte_pktmbuf_alloc(pktmbuf_pool);
+      assert(tx_mbufs_1[i] != nullptr);
 
-      uint8_t *pkt = rte_pktmbuf_mtod(tx_mbufs[i], uint8_t *);
+      uint8_t *pkt = rte_pktmbuf_mtod(tx_mbufs_1[i], uint8_t *);
 
       // For now, don't use DPDK's header defines
       auto *eth_hdr = reinterpret_cast<eth_hdr_t *>(pkt);
@@ -80,18 +86,35 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
       udp_hdr->dst_port =
           htons(kBaseUDPPort + fastrand(seed) % FLAGS_num_threads);
 
-      tx_mbufs[i]->nb_segs = 1;
-      tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
-      tx_mbufs[i]->data_len = tx_mbufs[i]->pkt_len;
+      if (!kAppTwoSegs) {
+        tx_mbufs_1[i]->nb_segs = 1;
+        tx_mbufs_1[i]->pkt_len = kTotHdrSz + kAppDataSize;
+        tx_mbufs_1[i]->data_len = tx_mbufs_1[i]->pkt_len;
+      } else {
+        tx_mbufs_1[i]->nb_segs = 2;
+        tx_mbufs_1[i]->pkt_len = kTotHdrSz + kAppDataSize;
+        tx_mbufs_1[i]->data_len = kTotHdrSz;  // First segment contains header
+        tx_mbufs_1[i]->next = tx_mbufs_2[i];
+
+        tx_mbufs_2[i] = rte_pktmbuf_alloc(pktmbuf_pool);
+        assert(tx_mbufs_2[i] != nullptr);
+        tx_mbufs_2[i]->data_len = kAppDataSize;
+        tx_mbufs_2[i]->next = nullptr;
+      }
     }
 
     size_t nb_tx_new =
-        rte_eth_tx_burst(kAppPortId, thread_id, tx_mbufs, kAppTxBatchSize);
+        rte_eth_tx_burst(kAppPortId, thread_id, tx_mbufs_1, kAppTxBatchSize);
     for (size_t i = nb_tx_new; i < kAppTxBatchSize; i++) {
-      rte_pktmbuf_free(tx_mbufs[i]);
+      rte_pktmbuf_free(tx_mbufs_1[i]);  // This frees chained segs
     }
 
     nb_tx += nb_tx_new;
+    if (kAppVerbose && nb_tx_new > 0) {
+      printf("Thread %zu: nb_tx_new = %zu, nb_tx = %zu\n", thread_id, nb_tx_new,
+             nb_tx);
+    }
+
     if (nb_tx >= 1000000) {
       clock_gettime(CLOCK_REALTIME, &end);
       double seconds = (end.tv_sec - start.tv_sec) +
@@ -115,10 +138,10 @@ void receiver_thread_func(size_t thread_id) {
   while (true) {
     size_t nb_rx_new =
         rte_eth_rx_burst(kAppPortId, thread_id, rx_pkts, kAppRxBatchSize);
-    // if (nb_rx_new > 0) {
-    //   printf("Thread %zu: nb_rx = %zu\n", thread_id, nb_rx_new);
-    // }
-    for (size_t i = 0; i < nb_rx_new; i++) rte_pktmbuf_free(rx_pkts[i]);
+    if (kAppVerbose && nb_rx_new > 0) {
+      printf("Thread %zu: nb_rx_new = %zu, nb_rx = %zu\n", thread_id, nb_rx_new,
+             nb_rx);
+    }
 
     nb_rx += nb_rx_new;
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 flags="
   --is_sender 0 \
-	--num_threads 5
+	--num_threads 1
 "
 
 # Check for non-gdb mode
