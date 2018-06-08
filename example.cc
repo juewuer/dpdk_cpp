@@ -41,12 +41,12 @@ static constexpr size_t kAppZeroCacheMbufs = 0;
 static constexpr size_t kAppRxQueueId = 0;
 static constexpr size_t kAppTxQueueId = 0;
 
-// uint8_t kDstMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-uint8_t kDstMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x02};
-char kDstIP[] = "10.10.1.1";
+// uint8_t kServerMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
+uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x02};
+char kServerIP[] = "10.10.1.1";
 
-uint8_t kSrcMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
-char kSrcIP[] = "10.10.1.2";
+uint8_t kClientMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
+char kClientIP[] = "10.10.1.2";
 
 uint16_t kBaseUDPPort = 3185;
 
@@ -59,8 +59,8 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
   rte_mbuf *tx_mbufs[kAppTxBatchSize];
   uint64_t seed = 0xdeadbeef;
 
-  uint32_t src_ip = ip_from_str(kSrcIP);
-  uint32_t dst_ip = ip_from_str(kDstIP);
+  uint32_t client_ip = ip_from_str(kClientIP);
+  uint32_t server_ip = ip_from_str(kServerIP);
 
   struct timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
@@ -79,8 +79,8 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
       auto *udp_hdr = reinterpret_cast<udp_hdr_t *>(pkt + sizeof(eth_hdr_t) +
                                                     sizeof(ipv4_hdr_t));
 
-      gen_eth_header(eth_hdr, kSrcMAC, kDstMAC);
-      gen_ipv4_header(ip_hdr, src_ip, dst_ip, kAppDataSize);
+      gen_eth_header(eth_hdr, kClientMAC, kServerMAC);
+      gen_ipv4_header(ip_hdr, client_ip, server_ip, kAppDataSize);
       gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
       udp_hdr->dst_port =
           htons(kBaseUDPPort + fastrand(seed) % FLAGS_num_threads);
@@ -151,7 +151,7 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
     filter.soft_id = queue_id;
     filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
     filter.input.flow.udp4_flow.dst_port = rte_cpu_to_be_16(udp_port);
-    filter.input.flow.udp4_flow.ip.dst_ip = ip_from_str(kDstIP);
+    filter.input.flow.udp4_flow.ip.dst_ip = ip_from_str(kServerIP);
     filter.action.rx_queue = queue_id;
     filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
     filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
