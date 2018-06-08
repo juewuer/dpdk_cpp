@@ -143,7 +143,6 @@ void receiver_thread_func(size_t thread_id) {
 // Steer packets received on udp_port to queue_id
 void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
   int ret;
-  printf("add_fdir_filter queue id %zu, udp port %u\n", queue_id, udp_port);
   if (ki40e) {
     // Use fdir filter for i40e (5-tuple not supported)
     rte_eth_fdir_filter filter;
