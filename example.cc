@@ -41,8 +41,9 @@ static constexpr size_t kAppTxBatchSize = 32;
 static constexpr size_t kAppNumMbufs = (kAppNumRxRingDesc * 2 - 1);
 static constexpr size_t kAppZeroCacheMbufs = 0;
 
+uint8_t kServerMAC[6] = {0x00, 0x8c, 0xfa, 0xf7, 0x1c, 0x80};
 // uint8_t kServerMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x02};
+// uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x02};
 char kServerIP[] = "10.10.1.1";
 
 uint8_t kClientMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
@@ -162,7 +163,23 @@ void receiver_thread_func(size_t thread_id) {
 // Steer packets received on udp_port to queue_id
 void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
   int ret;
-  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_FDIR) == 0) {
+  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) == 0) {
+    // Use 5-tuple filter for ixgbe even though it technically supports
+    // FILTER_FDIR. I couldn't get FILTER_FDIR to work with ixgbe.
+    struct rte_eth_ntuple_filter ntuple;
+    memset(&ntuple, 0, sizeof(ntuple));
+    ntuple.flags = RTE_5TUPLE_FLAGS;
+    ntuple.dst_port = rte_cpu_to_be_16(udp_port);
+    ntuple.dst_port_mask = UINT16_MAX;
+    ntuple.proto = IPPROTO_UDP;
+    ntuple.proto_mask = UINT8_MAX;
+    ntuple.priority = 1;
+    ntuple.queue = queue_id;
+
+    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
+                                  RTE_ETH_FILTER_ADD, &ntuple);
+  } else if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_FDIR) ==
+             0) {
     // Use fdir filter for i40e (5-tuple not supported)
     rte_eth_fdir_filter filter;
     memset(&filter, 0, sizeof(filter));
@@ -176,21 +193,6 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
 
     ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
                                   RTE_ETH_FILTER_ADD, &filter);
-  } else if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) ==
-             0) {
-    // Use 5-tuple filter for ixgbe
-    struct rte_eth_ntuple_filter ntuple;
-    memset(&ntuple, 0, sizeof(ntuple));
-    ntuple.flags = RTE_5TUPLE_FLAGS;
-    ntuple.dst_port = rte_cpu_to_be_16(udp_port);
-    ntuple.dst_port_mask = UINT16_MAX;
-    ntuple.proto = IPPROTO_UDP;
-    ntuple.proto_mask = UINT8_MAX;
-    ntuple.priority = 1;
-    ntuple.queue = queue_id;
-
-    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
-                                  RTE_ETH_FILTER_ADD, &ntuple);
   } else {
     rt_assert(false, "No flow director filters supported");
     ret = -1;
@@ -260,7 +262,9 @@ int main(int argc, char **argv) {
                               &eth_conf);
   rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
 
-  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_FDIR) == 0) {
+  // FILTER_SET fails for ixgbe, even though it supports flow director. As a
+  // workaround, don't call FILTER_SET if ntuple filter is supported.
+  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) != 0) {
     struct rte_eth_fdir_filter_info fi;
     memset(&fi, 0, sizeof(fi));
     fi.info_type = RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT;
