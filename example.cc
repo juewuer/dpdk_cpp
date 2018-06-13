@@ -6,7 +6,7 @@
 #include <rte_mbuf.h>
 #include <string>
 #include <thread>
-#include "eth_helpers.h"
+#include "eth_common.h"
 
 #include <gflags/gflags.h>
 DEFINE_uint64(is_sender, 0, "Is this process the sender?");
@@ -14,14 +14,6 @@ DEFINE_uint64(num_threads, 1, "Number of sender threads");
 
 static constexpr bool kAppTwoSegs = false;
 static constexpr bool kAppVerbose = false;
-
-static inline void rt_assert(bool condition, std::string throw_str) {
-  if (unlikely(!condition)) throw std::runtime_error(throw_str);
-}
-
-static inline void rt_assert(bool condition) {
-  if (unlikely(!condition)) throw std::runtime_error("Error");
-}
 
 inline uint32_t fastrand(uint64_t &seed) {
   seed = seed * 1103515245 + 12345;
@@ -41,15 +33,15 @@ static constexpr size_t kAppTxBatchSize = 32;
 static constexpr size_t kAppNumMbufs = (kAppNumRxRingDesc * 2 - 1);
 static constexpr size_t kAppZeroCacheMbufs = 0;
 
-uint8_t kServerMAC[6] = {0x00, 0x8c, 0xfa, 0xf7, 0x1c, 0x80};
+// uint8_t kServerMAC[6] = {0x00, 0x8c, 0xfa, 0xf7, 0x1c, 0x80};
 // uint8_t kServerMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-// uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x56, 0x00, 0x02};
+uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xf9, 0xe2};
 char kServerIP[] = "10.10.1.1";
 
 uint8_t kClientMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
 char kClientIP[] = "10.10.1.2";
 
-uint16_t kBaseUDPPort = 3185;
+uint16_t kBaseUDPPort = 10200;
 
 // Per-element size for the packet buffer memory pool
 static constexpr size_t kAppMbufSize =
@@ -62,8 +54,8 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
   uint64_t seed = 0xdeadbeef;
 
-  uint32_t client_ip = ip_from_str(kClientIP);
-  uint32_t server_ip = ip_from_str(kServerIP);
+  uint32_t client_ip = ipv4_from_str(kClientIP);
+  uint32_t server_ip = ipv4_from_str(kServerIP);
 
   struct timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
@@ -91,12 +83,12 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
       if (!kAppTwoSegs) {
         tx_mbufs[i]->nb_segs = 1;
-        tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
+        tx_mbufs[i]->pkt_len = kInetHdrsTotSize + kAppDataSize;
         tx_mbufs[i]->data_len = tx_mbufs[i]->pkt_len;
       } else {
         tx_mbufs[i]->nb_segs = 2;
-        tx_mbufs[i]->pkt_len = kTotHdrSz + kAppDataSize;
-        tx_mbufs[i]->data_len = kTotHdrSz;  // First segment contains header
+        tx_mbufs[i]->pkt_len = kInetHdrsTotSize + kAppDataSize;
+        tx_mbufs[i]->data_len = kInetHdrsTotSize;  // First segment contains hdr
         tx_mbufs[i]->next = rte_pktmbuf_alloc(pktmbuf_pool);
 
         assert(tx_mbufs[i]->next != nullptr);
@@ -186,7 +178,7 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
     filter.soft_id = queue_id;
     filter.input.flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP;
     filter.input.flow.udp4_flow.dst_port = rte_cpu_to_be_16(udp_port);
-    filter.input.flow.udp4_flow.ip.dst_ip = ip_from_str(kServerIP);
+    filter.input.flow.udp4_flow.ip.dst_ip = ipv4_from_str(kServerIP);
     filter.action.rx_queue = queue_id;
     filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
     filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
@@ -206,7 +198,7 @@ int main(int argc, char **argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   const char *rte_argv[] = {"-c", "1", "-n", "4", nullptr};
-  int rte_argc = static_cast<int>(sizeof(argv) / sizeof(argv[0])) - 1;
+  int rte_argc = static_cast<int>(sizeof(rte_argv) / sizeof(rte_argv[0])) - 1;
   int ret = rte_eal_init(rte_argc, const_cast<char **>(rte_argv));
   rt_assert(ret >= 0, "rte_eal_init failed");
 
