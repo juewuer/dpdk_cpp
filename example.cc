@@ -94,6 +94,12 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
         assert(tx_mbufs[i]->next != nullptr);
         tx_mbufs[i]->next->data_len = kAppDataSize;
       }
+
+      if (kAppVerbose) {
+        printf("Thread %zu: Sending packet %s\n", thread_id,
+               frame_header_to_string(rte_pktmbuf_mtod(tx_mbufs[i], uint8_t *))
+                   .c_str());
+      }
     }
 
     size_t nb_tx_new =
