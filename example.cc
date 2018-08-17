@@ -35,7 +35,7 @@ static constexpr size_t kAppZeroCacheMbufs = 0;
 
 // uint8_t kServerMAC[6] = {0x00, 0x8c, 0xfa, 0xf7, 0x1c, 0x80};
 // uint8_t kServerMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xf9, 0xe2};
+uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xfe, 0x22};
 char kServerIP[] = "10.10.1.1";
 
 uint8_t kClientMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
@@ -313,7 +313,6 @@ int main(int argc, char **argv) {
   struct rte_eth_link link;
   rte_eth_link_get(kAppPortId, &link);
   rt_assert(link.link_status > 0, "Failed to detect link");
-  rt_assert(link.link_speed != ETH_SPEED_NUM_NONE, "Failed to get bw");
   printf("Link bandwidth = %u Mbps\n", link.link_speed);
 
   // rte_eth_promiscuous_enable(kAppPortId);

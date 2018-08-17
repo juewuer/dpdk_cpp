@@ -39,8 +39,7 @@ home_dir = expanduser("~")
 flags = [
     '-x',
     'c++',
-    '-DFAULT_INJECTION',
-    '-isystem' + '/users/akalia/dpdk/x86_64-native-linuxapp-gcc/include',
+    '-isystem' + '/usr/include/dpdk',
     '-Wall',
     '-Werror',
     '-Wextra',
