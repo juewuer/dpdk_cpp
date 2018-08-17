@@ -26,8 +26,6 @@ static constexpr uint16_t kIPHdrProtocol = 0x11;
 /// kBaseEthUDPPort and the Rpc's NUMA node
 static constexpr uint16_t kBaseEthUDPPort = 10000;
 
-#define unlikely(x) __builtin_expect(!!(x), 0)
-
 /// Check a condition at runtime. If the condition is false, throw exception.
 static inline void rt_assert(bool condition, std::string throw_str, char* s) {
   if (unlikely(!condition)) {

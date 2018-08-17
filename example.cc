@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
   int ret = rte_eal_init(rte_argc, const_cast<char **>(rte_argv));
   rt_assert(ret >= 0, "rte_eal_init failed");
 
-  uint16_t num_ports = rte_eth_dev_count_avail();
+  uint16_t num_ports = rte_eth_dev_count();  // Deprecated, use _avail instead
   rt_assert(num_ports > kAppPortId, "Too few ports");
 
   rte_eth_dev_info dev_info;
