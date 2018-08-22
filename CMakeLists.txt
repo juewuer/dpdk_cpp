@@ -30,7 +30,16 @@ else(PERF)
   add_definitions(-g)
 endif(PERF)
 
-find_path(DPDK_INCLUDE_DIR rte_config.h)
+# DPDK include directory. Locating rte_config.h does not work on some systems.
+# Example: it may be kept in /usr/include/x86_64-linux-gnu/, and symlinked
+# from the real DPDK include directory (/usr/include/dpdk/).
+find_path(DPDK_INCLUDE_DIR NAMES rte_ethdev.h PATH_SUFFIXES dpdk)
+if (DPDK_INCLUDE_DIR)
+  message(STATUS "DPDK include directory = ${DPDK_INCLUDE_DIR}")
+else()
+  message(FATAL_ERROR "DPDK include directory not found. Please install DPDK.")
+endif()
 include_directories(SYSTEM ${DPDK_INCLUDE_DIR})
+
 add_executable(example example.cc)
 target_link_libraries(example ${LIBRARIES})
