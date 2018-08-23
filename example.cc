@@ -21,7 +21,7 @@ inline uint32_t fastrand(uint64_t &seed) {
 }
 
 static constexpr size_t kAppMTU = 1024;
-static constexpr size_t kAppPortId = 0;
+static constexpr size_t kAppPortId = 1;
 static constexpr size_t kAppNumaNode = 0;
 static constexpr size_t kAppDataSize = 32;  // App-level data size
 
@@ -33,15 +33,16 @@ static constexpr size_t kAppTxBatchSize = 32;
 static constexpr size_t kAppNumMbufs = (kAppNumRxRingDesc * 2 - 1);
 static constexpr size_t kAppZeroCacheMbufs = 0;
 
-// uint8_t kServerMAC[6] = {0x00, 0x8c, 0xfa, 0xf7, 0x1c, 0x80};
-// uint8_t kServerMAC[6] = {0xa0, 0x36, 0x9f, 0x2a, 0x5c, 0x54};
-uint8_t kServerMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0xfe, 0x22};
+char kServerMAC[] = "9c:dc:71:5b:32:91";
 char kServerIP[] = "10.10.1.1";
 
-uint8_t kClientMAC[6] = {0x3c, 0xfd, 0xfe, 0x55, 0x47, 0xfa};
+char kClientMAC[] = "9c:dc:71:5c:af:c1";
 char kClientIP[] = "10.10.1.2";
 
 uint16_t kBaseUDPPort = 10200;
+
+bool ntuple_filter_supported = false;
+bool fdir_filter_supported = false;
 
 // Per-element size for the packet buffer memory pool
 static constexpr size_t kAppMbufSize =
@@ -56,6 +57,9 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
   uint32_t client_ip = ipv4_from_str(kClientIP);
   uint32_t server_ip = ipv4_from_str(kServerIP);
+  uint8_t client_mac[6], server_mac[6];
+  mac_from_str(kClientMAC, client_mac);
+  mac_from_str(kServerMAC, server_mac);
 
   struct timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
@@ -75,7 +79,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
       auto *udp_hdr = reinterpret_cast<udp_hdr_t *>(pkt + sizeof(eth_hdr_t) +
                                                     sizeof(ipv4_hdr_t));
 
-      gen_eth_header(eth_hdr, kClientMAC, kServerMAC);
+      gen_eth_header(eth_hdr, client_mac, server_mac);
       gen_ipv4_header(ip_hdr, client_ip, server_ip, kAppDataSize);
       gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
       udp_hdr->dst_port =
@@ -159,9 +163,8 @@ void receiver_thread_func(size_t thread_id) {
 }
 
 // Steer packets received on udp_port to queue_id
-void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
-  int ret;
-  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) == 0) {
+void add_filter_rule(size_t queue_id, uint16_t udp_port) {
+  if (ntuple_filter_supported) {
     // Use 5-tuple filter for ixgbe even though it technically supports
     // FILTER_FDIR. I couldn't get FILTER_FDIR to work with ixgbe.
     struct rte_eth_ntuple_filter ntuple;
@@ -174,10 +177,11 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
     ntuple.priority = 1;
     ntuple.queue = queue_id;
 
-    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
-                                  RTE_ETH_FILTER_ADD, &ntuple);
-  } else if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_FDIR) ==
-             0) {
+    int ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_NTUPLE,
+                                      RTE_ETH_FILTER_ADD, &ntuple);
+    rt_assert(ret == 0, "Failed to add ntuple filter");
+    printf("Added ntuple filter. Queue %zu, port %u\n", queue_id, udp_port);
+  } else if (fdir_filter_supported) {
     // Use fdir filter for i40e (5-tuple not supported)
     rte_eth_fdir_filter filter;
     memset(&filter, 0, sizeof(filter));
@@ -189,21 +193,35 @@ void add_fdir_filter(size_t queue_id, uint16_t udp_port) {
     filter.action.behavior = RTE_ETH_FDIR_ACCEPT;
     filter.action.report_status = RTE_ETH_FDIR_NO_REPORT_STATUS;
 
-    ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
-                                  RTE_ETH_FILTER_ADD, &filter);
+    int ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
+                                      RTE_ETH_FILTER_ADD, &filter);
+    rt_assert(ret == 0, "Failed to add fdir filter");
+    printf("Added fdir filter. Queue %zu, port %u\n", queue_id, udp_port);
   } else {
     rt_assert(false, "No flow director filters supported");
-    ret = -1;
+  }
+}
+
+static void check_supported_filters(uint8_t phy_port) {
+  if (rte_eth_dev_filter_supported(phy_port, RTE_ETH_FILTER_FDIR) == 0) {
+    printf("dpdk_cpp: Port %u supports flow director filter.\n", phy_port);
+    fdir_filter_supported = true;
+  } else {
+    printf("dpdk_cpp: Port %u does not support fdir filter.\n", phy_port);
   }
 
-  rt_assert(ret == 0,
-            "Failed to add fdir entry " + std::string(rte_strerror(errno)));
+  if (rte_eth_dev_filter_supported(phy_port, RTE_ETH_FILTER_NTUPLE) == 0) {
+    printf("dpdk_cpp: Port %u supports ntuple filter.\n", phy_port);
+    ntuple_filter_supported = true;
+  } else {
+    printf("dpdk_cpp: Port %u does not support ntuple filter.\n", phy_port);
+  }
 }
 
 int main(int argc, char **argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
 
-  const char *rte_argv[] = {"-c", "1", "-n", "4", nullptr};
+  const char *rte_argv[] = {"-c", "1", "-n", "4", "-m", "512", nullptr};
   int rte_argc = static_cast<int>(sizeof(rte_argv) / sizeof(rte_argv[0])) - 1;
   int ret = rte_eal_init(rte_argc, const_cast<char **>(rte_argv));
   rt_assert(ret >= 0, "rte_eal_init failed");
@@ -260,6 +278,8 @@ int main(int argc, char **argv) {
                               &eth_conf);
   rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
 
+  check_supported_filters(kAppPortId);
+
   // FILTER_SET fails for ixgbe, even though it supports flow director. As a
   // workaround, don't call FILTER_SET if ntuple filter is supported.
   if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) != 0) {
@@ -273,7 +293,7 @@ int main(int argc, char **argv) {
     fi.info.input_set_conf.op = RTE_ETH_INPUT_SET_SELECT;
     ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
                                   RTE_ETH_FILTER_SET, &fi);
-    rt_assert(ret == 0, "Failed to configure flow director fields");
+    printf("Failed to configure fdir fields. This could be survivable.\n");
   }
 
   struct ether_addr mac;
@@ -300,7 +320,7 @@ int main(int argc, char **argv) {
                                  &eth_tx_conf);
     rt_assert(ret == 0, "Failed to setup TX queue " + std::to_string(i));
 
-    add_fdir_filter(i, kBaseUDPPort + i);
+    add_filter_rule(i, kBaseUDPPort + i);
   }
 
   ret = rte_eth_dev_set_mtu(kAppPortId, kAppMTU);
