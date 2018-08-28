@@ -21,7 +21,7 @@ inline uint32_t fastrand(uint64_t &seed) {
 }
 
 static constexpr size_t kAppMTU = 1024;
-static constexpr size_t kAppPortId = 1;
+static constexpr size_t kAppPortId = 0;
 static constexpr size_t kAppNumaNode = 0;
 static constexpr size_t kAppDataSize = 32;  // App-level data size
 
