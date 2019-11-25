@@ -1,3 +1,4 @@
+#include <gflags/gflags.h>
 #include <rte_common.h>
 #include <rte_config.h>
 #include <rte_errno.h>
@@ -8,9 +9,10 @@
 #include <thread>
 #include "eth_common.h"
 
-#include <gflags/gflags.h>
 DEFINE_uint64(is_sender, 0, "Is this process the sender?");
 DEFINE_uint64(num_threads, 1, "Number of sender threads");
+
+static_assert(RTE_VER_YEAR >= 19, "DPDK 19.11 required");
 
 static constexpr bool kAppTwoSegs = false;
 static constexpr bool kAppVerbose = false;
@@ -132,6 +134,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 }
 
 void receiver_thread_func(size_t thread_id) {
+  printf("Thread %zu starting packet RX\n", thread_id);
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
 
   struct timespec start, end;
@@ -241,8 +244,7 @@ int main(int argc, char **argv) {
   memset(&eth_conf, 0, sizeof(eth_conf));
 
   eth_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
-  eth_conf.rxmode.max_rx_pkt_len = ETHER_MAX_LEN;
-  eth_conf.rxmode.ignore_offload_bitfield = 1;  // Use offloads below instead
+  eth_conf.rxmode.max_rx_pkt_len = RTE_ETHER_MAX_LEN;
   eth_conf.rxmode.offloads = 0;
 
   // XXX: ixgbe does not support fast free offload, but i40e does
@@ -271,7 +273,6 @@ int main(int argc, char **argv) {
   eth_tx_conf.tx_thresh.wthresh = 0;
   eth_tx_conf.tx_free_thresh = 0;
   eth_tx_conf.tx_rs_thresh = 0;
-  eth_tx_conf.txq_flags = ETH_TXQ_FLAGS_IGNORE;  // Use offloads below instead
   eth_tx_conf.offloads = eth_conf.txmode.offloads;
 
   ret = rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
@@ -296,7 +297,7 @@ int main(int argc, char **argv) {
     printf("Failed to configure fdir fields. This could be survivable.\n");
   }
 
-  struct ether_addr mac;
+  struct rte_ether_addr mac;
   rte_eth_macaddr_get(kAppPortId, &mac);
   printf("Ether addr = %s\n", mac_to_string(mac.addr_bytes).c_str());
 
