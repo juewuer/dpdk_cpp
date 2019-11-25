@@ -16,7 +16,7 @@ add_definitions(-Wno-keyword-macro)
 add_definitions(-Wno-deprecated-declarations)
 add_definitions(-march=native)
 add_definitions(-g)
-set(LIBRARIES ${LIBRARIES} -Wl,--whole-archive rt pthread gflags dpdk numa dl -Wl,--no-whole-archive)
+set(LIBRARIES ${LIBRARIES} rt pthread gflags -Wl,--whole-archive dpdk -Wl,--no-whole-archive numa dl)
 
 # Options exposed to the user
 option(PERF "Compile for performance" OFF)
