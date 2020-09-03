@@ -13,7 +13,7 @@ add_definitions(-Wno-unused-function)
 add_definitions(-Wno-deprecated-declarations)
 add_definitions(-march=native)
 add_definitions(-g)
-set(LIBRARIES ${LIBRARIES} rt pthread gflags -Wl,--whole-archive dpdk -Wl,--no-whole-archive numa dl)
+set(LIBRARIES ${LIBRARIES} rt pthread gflags -Wl,--whole-archive dpdk -Wl,--no-whole-archive numa dl ibverbs mlx5)
 
 # Options exposed to the user
 option(PERF "Compile for performance" OFF)
