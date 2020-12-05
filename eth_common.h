@@ -104,10 +104,8 @@ struct eth_hdr_t {
 } __attribute__((packed));
 
 struct ipv4_hdr_t {
-  uint8_t ihl : 4;
-  uint8_t version : 4;
-  uint8_t ecn : 2;
-  uint8_t dscp : 6;
+  uint8_t version_ihl;
+  uint8_t type_of_service;
   uint16_t tot_len;
   uint16_t id;
   uint16_t frag_off;
@@ -119,8 +117,8 @@ struct ipv4_hdr_t {
 
   std::string to_string() const {
     std::ostringstream ret;
-    ret << "[IPv4: ihl " << std::to_string(ihl) << ", version "
-        << std::to_string(version) << ", ecn " << std::to_string(ecn)
+    ret << "[IPv4: version_ihl " << std::to_string(version_ihl)
+        << ", type_of_service " << std::to_string(type_of_service)
         << ", tot_len " << std::to_string(ntohs(tot_len)) << ", id "
         << std::to_string(ntohs(id)) << ", frag_off "
         << std::to_string(ntohs(frag_off)) << ", ttl " << std::to_string(ttl)
@@ -171,10 +169,8 @@ static void gen_eth_header(eth_hdr_t* eth_header, const uint8_t* src_mac,
 /// payload size in the UDP packet.
 static void gen_ipv4_header(ipv4_hdr_t* ipv4_hdr, uint32_t src_ip,
                             uint32_t dst_ip, uint16_t data_size) {
-  ipv4_hdr->version = 4;
-  ipv4_hdr->ihl = 5;
-  ipv4_hdr->ecn = 1;  // ECT => ECN-capable transport
-  ipv4_hdr->dscp = 0;
+  ipv4_hdr->version_ihl = 0x40 | 0x05;
+  ipv4_hdr->type_of_service = 0;
   ipv4_hdr->tot_len = htons(sizeof(ipv4_hdr_t) + sizeof(udp_hdr_t) + data_size);
   ipv4_hdr->id = htons(0);
   ipv4_hdr->frag_off = htons(0);
@@ -182,7 +178,25 @@ static void gen_ipv4_header(ipv4_hdr_t* ipv4_hdr, uint32_t src_ip,
   ipv4_hdr->protocol = kIPHdrProtocol;
   ipv4_hdr->src_ip = src_ip;
   ipv4_hdr->dst_ip = dst_ip;
-  ipv4_hdr->check = 0;
+
+  // Compute IP header checksum (copied from DPDK testpmd). On some bare-metal
+  // clusters, packets go through with a zero IP checksum. But not on Azure.
+  uint16_t* ptr16 = reinterpret_cast<uint16_t*>(ipv4_hdr);
+  uint32_t ip_cksum = 0;
+  ip_cksum += ptr16[0];
+  ip_cksum += ptr16[1];
+  ip_cksum += ptr16[2];
+  ip_cksum += ptr16[3];
+  ip_cksum += ptr16[4];
+  ip_cksum += ptr16[6];
+  ip_cksum += ptr16[7];
+  ip_cksum += ptr16[8];
+  ip_cksum += ptr16[9];
+  ip_cksum = ((ip_cksum & 0xFFFF0000) >> 16) + (ip_cksum & 0x0000FFFF);
+  if (ip_cksum > 65535) ip_cksum -= 65535;
+  ip_cksum = (~ip_cksum) & 0x0000FFFF;
+  if (ip_cksum == 0) ip_cksum = 0xFFFF;
+  ipv4_hdr->check = static_cast<uint16_t>(ip_cksum);
 }
 
 /// Format the UDP header for a UDP packet. Note that \p data_size is the

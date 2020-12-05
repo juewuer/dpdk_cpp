@@ -34,6 +34,7 @@ static constexpr size_t kAppTxBatchSize = 32;
 
 static constexpr size_t kAppNumMbufs = (kAppNumRxRingDesc * 2 - 1);
 static constexpr size_t kAppZeroCacheMbufs = 0;
+static constexpr bool kInstallFlowRules = false;
 
 char kServerMAC[] = "9c:dc:71:5b:32:91";
 char kServerIP[] = "10.10.1.1";
@@ -41,7 +42,7 @@ char kServerIP[] = "10.10.1.1";
 char kClientMAC[] = "9c:dc:71:5c:af:c1";
 char kClientIP[] = "10.10.1.2";
 
-uint16_t kBaseUDPPort = 10200;
+uint16_t kBaseUDPPort = 10000;
 
 bool ntuple_filter_supported = false;
 bool fdir_filter_supported = false;
@@ -283,7 +284,8 @@ int main(int argc, char **argv) {
 
   // FILTER_SET fails for ixgbe, even though it supports flow director. As a
   // workaround, don't call FILTER_SET if ntuple filter is supported.
-  if (rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) != 0) {
+  if (kInstallFlowRules &&
+      rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) != 0) {
     struct rte_eth_fdir_filter_info fi;
     memset(&fi, 0, sizeof(fi));
     fi.info_type = RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT;
@@ -321,7 +323,7 @@ int main(int argc, char **argv) {
                                  &eth_tx_conf);
     rt_assert(ret == 0, "Failed to setup TX queue " + std::to_string(i));
 
-    add_filter_rule(i, kBaseUDPPort + i);
+    if (kInstallFlowRules) add_filter_rule(i, kBaseUDPPort + i);
   }
 
   ret = rte_eth_dev_set_mtu(kAppPortId, kAppMTU);
