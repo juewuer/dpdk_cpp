@@ -36,11 +36,11 @@ static constexpr size_t kAppNumMbufs = (kAppNumRxRingDesc * 2 - 1);
 static constexpr size_t kAppZeroCacheMbufs = 0;
 static constexpr bool kInstallFlowRules = false;
 
-char kServerMAC[] = "9c:dc:71:5b:32:91";
-char kServerIP[] = "10.10.1.1";
+char kServerMAC[] = "00:0d:3a:e4:0f:e8";
+char kServerIP[] = "172.18.50.8";
 
-char kClientMAC[] = "9c:dc:71:5c:af:c1";
-char kClientIP[] = "10.10.1.2";
+char kClientMAC[] = "00:0d:3a:7d:ec:bd";
+char kClientIP[] = "172.18.50.10";
 
 uint16_t kBaseUDPPort = 10000;
 
@@ -258,24 +258,6 @@ int main(int argc, char **argv) {
   eth_conf.fdir_conf.mask.dst_port_mask = 0xffff;
   eth_conf.fdir_conf.drop_queue = 0;
 
-  // XXX: Are these thresh and txq_flags value optimal?
-  rte_eth_rxconf eth_rx_conf;
-  memset(&eth_rx_conf, 0, sizeof(eth_rx_conf));
-  eth_rx_conf.rx_thresh.pthresh = 8;
-  eth_rx_conf.rx_thresh.hthresh = 0;
-  eth_rx_conf.rx_thresh.wthresh = 0;
-  eth_rx_conf.rx_free_thresh = 0;
-  eth_rx_conf.rx_drop_en = 0;
-
-  rte_eth_txconf eth_tx_conf;
-  memset(&eth_tx_conf, 0, sizeof(eth_tx_conf));
-  eth_tx_conf.tx_thresh.pthresh = 32;
-  eth_tx_conf.tx_thresh.hthresh = 0;
-  eth_tx_conf.tx_thresh.wthresh = 0;
-  eth_tx_conf.tx_free_thresh = 0;
-  eth_tx_conf.tx_rs_thresh = 0;
-  eth_tx_conf.offloads = eth_conf.txmode.offloads;
-
   ret = rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
                               &eth_conf);
   rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
@@ -315,9 +297,26 @@ int main(int argc, char **argv) {
     rt_assert(mempools[i] != nullptr,
               "Mempool create failed " + std::string(rte_strerror(rte_errno)));
 
+    // XXX: Are these thresh and txq_flags value optimal?
+    rte_eth_rxconf eth_rx_conf;
+    memset(&eth_rx_conf, 0, sizeof(eth_rx_conf));
+    eth_rx_conf.rx_thresh.pthresh = 8;
+    eth_rx_conf.rx_thresh.hthresh = 0;
+    eth_rx_conf.rx_thresh.wthresh = 0;
+    eth_rx_conf.rx_free_thresh = 0;
+    eth_rx_conf.rx_drop_en = 0;
     ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRxRingDesc, kAppNumaNode,
                                  &eth_rx_conf, mempools[i]);
     rt_assert(ret == 0, "Failed to setup RX queue " + std::to_string(i));
+
+    rte_eth_txconf eth_tx_conf;
+    memset(&eth_tx_conf, 0, sizeof(eth_tx_conf));
+    eth_tx_conf.tx_thresh.pthresh = 32;
+    eth_tx_conf.tx_thresh.hthresh = 0;
+    eth_tx_conf.tx_thresh.wthresh = 0;
+    eth_tx_conf.tx_free_thresh = 0;
+    eth_tx_conf.tx_rs_thresh = 0;
+    eth_tx_conf.offloads = eth_conf.txmode.offloads;
 
     ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumTxRingDesc, kAppNumaNode,
                                  &eth_tx_conf);
