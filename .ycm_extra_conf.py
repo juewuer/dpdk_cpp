@@ -47,6 +47,7 @@ flags = [
     '-Wno-unused-function',
     '-Wold-style-cast',
     '-Wsign-conversion',
+    '-Wno-deprecated-declarations',
     '-std=c++11',
 ]
 
