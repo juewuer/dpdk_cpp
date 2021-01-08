@@ -5,17 +5,23 @@
 #include <rte_ethdev.h>
 #include <rte_ip.h>
 #include <rte_mbuf.h>
+#include <rte_thash.h>
+#include <iostream>
+#include <set>
 #include <string>
 #include <thread>
 #include "eth_common.h"
 
 DEFINE_uint64(is_sender, 0, "Is this process the sender?");
-DEFINE_uint64(num_threads, 1, "Number of sender threads");
+DEFINE_uint64(num_threads, 5, "Number of sender threads");
 
 static_assert(RTE_VER_YEAR >= 19, "DPDK 19.11 required");
 
+/// mempool_arr[i][j] is the mempool to use for port i, queue j
+rte_mempool *mempool_arr[RTE_MAX_ETHPORTS][16];
+
 static constexpr bool kAppTwoSegs = false;
-static constexpr bool kAppVerbose = false;
+static constexpr bool kAppVerbose = true;
 
 inline uint32_t fastrand(uint64_t &seed) {
   seed = seed * 1103515245 + 12345;
@@ -23,7 +29,7 @@ inline uint32_t fastrand(uint64_t &seed) {
 }
 
 static constexpr size_t kAppMTU = 1024;
-static constexpr size_t kAppPortId = 0;
+static constexpr uint32_t kAppPortId = 0;
 static constexpr size_t kAppNumaNode = 0;
 static constexpr size_t kAppDataSize = 32;  // App-level data size
 
@@ -34,18 +40,32 @@ static constexpr size_t kAppTxBatchSize = 32;
 
 static constexpr size_t kAppNumMbufs = (kAppNumRxRingDesc * 2 - 1);
 static constexpr size_t kAppZeroCacheMbufs = 0;
-static constexpr bool kInstallFlowRules = false;
+
+static constexpr bool kInstallFlowRules = false;  // Flow Director rules
+static constexpr bool kInstallRSS = true;         // RSS rules
 
 char kServerMAC[] = "00:0d:3a:e4:0f:e8";
 char kServerIP[] = "172.18.50.8";
 
+// ankalia-erpc-2
 char kClientMAC[] = "00:0d:3a:7d:ec:bd";
 char kClientIP[] = "172.18.50.10";
+
+// ankalia-erpc-3
+// char kClientMAC[] = "00:0d:3a:0f:98:85";
+// char kClientIP[] = "172.18.50.12";
 
 uint16_t kBaseUDPPort = 10000;
 
 bool ntuple_filter_supported = false;
 bool fdir_filter_supported = false;
+
+uint8_t default_rss_key[] = {
+    0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2, 0x41, 0x67,
+    0x25, 0x3d, 0x43, 0xa3, 0x8f, 0xb0, 0xd0, 0xca, 0x2b, 0xcb,
+    0xae, 0x7b, 0x30, 0xb4, 0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30,
+    0xf2, 0x0c, 0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa,
+};
 
 // Per-element size for the packet buffer memory pool
 static constexpr size_t kAppMbufSize =
@@ -84,7 +104,8 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
       gen_eth_header(eth_hdr, client_mac, server_mac);
       gen_ipv4_header(ip_hdr, client_ip, server_ip, kAppDataSize);
-      gen_udp_header(udp_hdr, kBaseUDPPort, kBaseUDPPort, kAppDataSize);
+      gen_udp_header(udp_hdr, kBaseUDPPort + fastrand(seed) % 8,
+                     kBaseUDPPort + fastrand(seed) % 8, kAppDataSize);
       udp_hdr->dst_port =
           htons(kBaseUDPPort + fastrand(seed) % FLAGS_num_threads);
 
@@ -106,6 +127,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
         printf("Thread %zu: Sending packet %s\n", thread_id,
                frame_header_to_string(rte_pktmbuf_mtod(tx_mbufs[i], uint8_t *))
                    .c_str());
+        usleep(100000);
       }
     }
 
@@ -136,6 +158,7 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
 void receiver_thread_func(size_t thread_id) {
   printf("Thread %zu starting packet RX\n", thread_id);
+  std::set<uint32_t> source_port_set, rss_hash_set;
   struct rte_mbuf *rx_pkts[kAppRxBatchSize];
 
   struct timespec start, end;
@@ -150,7 +173,44 @@ void receiver_thread_func(size_t thread_id) {
              nb_rx);
     }
 
-    for (size_t i = 0; i < nb_rx_new; i++) rte_pktmbuf_free(rx_pkts[i]);
+    for (size_t i = 0; i < nb_rx_new; i++) {
+      uint8_t *pkt = rte_pktmbuf_mtod(rx_pkts[i], uint8_t *);
+
+      auto *ip_hdr = reinterpret_cast<ipv4_hdr_t *>(pkt + sizeof(eth_hdr_t));
+      auto *udp_hdr = reinterpret_cast<udp_hdr_t *>(pkt + sizeof(eth_hdr_t) +
+                                                    sizeof(ipv4_hdr_t));
+
+      union rte_thash_tuple tuple;
+      tuple.v4.src_addr = ntohl(ip_hdr->src_ip);
+      tuple.v4.dst_addr = ntohl(ip_hdr->dst_ip);
+      tuple.v4.sport = ntohs(udp_hdr->src_port);
+      tuple.v4.dport = ntohs(udp_hdr->dst_port);
+      uint32_t rss_l3l4 = rte_softrss(reinterpret_cast<uint32_t *>(&tuple),
+                                      RTE_THASH_V4_L4_LEN, default_rss_key);
+
+      if (kAppVerbose) {
+        if (rx_pkts[i]->hash.rss != rss_l3l4) {
+          printf("Hash mismatch: Hardware hash %u, software hash %u\n",
+                 rx_pkts[i]->hash.rss, rss_l3l4);
+        }
+
+        std::ostringstream ret;
+        source_port_set.insert(ntohs(udp_hdr->src_port));
+        rss_hash_set.insert(rx_pkts[i]->hash.rss);
+        ret << "Thread " << thread_id << " hash set {";
+        for (auto &h : rss_hash_set) ret << h << ", ";
+        ret << "}, source port set {";
+        for (auto &p : source_port_set) ret << p << ", ";
+        ret << "}";
+        printf("%s\n", ret.str().c_str());
+
+        /*
+        for (auto &p : source_port_set) printf("%u, ", p);
+        printf("\n");
+        */
+      }
+      rte_pktmbuf_free(rx_pkts[i]);
+    }
     nb_rx += nb_rx_new;
 
     if (nb_rx >= 1000000) {
@@ -231,7 +291,15 @@ int main(int argc, char **argv) {
   rt_assert(ret >= 0, "rte_eal_init failed");
 
   uint16_t num_ports = rte_eth_dev_count_avail();
-  rt_assert(num_ports > kAppPortId, "Too few ports");
+  if (kAppPortId >= num_ports) {
+    fprintf(stderr,
+            "Port %u (0-based) requested, but only %u DPDK ports available. If "
+            "you have a DPDK-bound port, ensure that (a) the NIC's NUMA node "
+            "has huge pages, and (b) the process is not pinned "
+            "(e.g., via numactl) to a different NUMA node than the NIC's.\n",
+            kAppPortId, num_ports);
+    rt_assert(false);
+  }
 
   rte_eth_dev_info dev_info;
   rte_eth_dev_info_get(kAppPortId, &dev_info);
@@ -239,35 +307,26 @@ int main(int argc, char **argv) {
             "Device RX ring too small");
   rt_assert(dev_info.tx_desc_lim.nb_max >= kAppNumTxRingDesc,
             "Device TX ring too small");
+  printf("Initializing port %u with driver %s\n", kAppPortId,
+         dev_info.driver_name);
 
   // Create per-thread RX and TX queues
   rte_eth_conf eth_conf;
   memset(&eth_conf, 0, sizeof(eth_conf));
 
-  eth_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
-  eth_conf.rxmode.max_rx_pkt_len = RTE_ETHER_MAX_LEN;
-  eth_conf.rxmode.offloads = 0;
-
-  // XXX: ixgbe does not support fast free offload, but i40e does
-  eth_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
-  eth_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS;
-
-  eth_conf.fdir_conf.mode = RTE_FDIR_MODE_PERFECT;
-  eth_conf.fdir_conf.pballoc = RTE_FDIR_PBALLOC_64K;
-  eth_conf.fdir_conf.status = RTE_FDIR_NO_REPORT_STATUS;
-  eth_conf.fdir_conf.mask.dst_port_mask = 0xffff;
-  eth_conf.fdir_conf.drop_queue = 0;
+  eth_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+  eth_conf.rx_adv_conf.rss_conf.rss_key = default_rss_key;
+  eth_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+  eth_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP;
 
   ret = rte_eth_dev_configure(kAppPortId, FLAGS_num_threads, FLAGS_num_threads,
                               &eth_conf);
-  rt_assert(ret == 0, "Dev config err " + std::string(rte_strerror(rte_errno)));
+  rt_assert(ret == 0, "Ethdev configuration error: ", strerror(-1 * ret));
 
-  check_supported_filters(kAppPortId);
-
-  // FILTER_SET fails for ixgbe, even though it supports flow director. As a
-  // workaround, don't call FILTER_SET if ntuple filter is supported.
+  // Set flow director fields if flow director is supported. It's OK if the
+  // FILTER_SET command fails (e.g., on ConnectX-4 NICs).
   if (kInstallFlowRules &&
-      rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_NTUPLE) != 0) {
+      rte_eth_dev_filter_supported(kAppPortId, RTE_ETH_FILTER_FDIR) == 0) {
     struct rte_eth_fdir_filter_info fi;
     memset(&fi, 0, sizeof(fi));
     fi.info_type = RTE_ETH_FDIR_FILTER_INPUT_SET_SELECT;
@@ -278,26 +337,24 @@ int main(int argc, char **argv) {
     fi.info.input_set_conf.op = RTE_ETH_INPUT_SET_SELECT;
     ret = rte_eth_dev_filter_ctrl(kAppPortId, RTE_ETH_FILTER_FDIR,
                                   RTE_ETH_FILTER_SET, &fi);
-    printf("Failed to configure fdir fields. This could be survivable.\n");
+    if (ret != 0) {
+      printf("Failed to set flow director fields. Could be survivable...\n");
+    }
   }
 
-  struct rte_ether_addr mac;
-  rte_eth_macaddr_get(kAppPortId, &mac);
-  printf("Ether addr = %s\n", mac_to_string(mac.addr_bytes).c_str());
-
-  auto *mempools = new rte_mempool *[FLAGS_num_threads];
-
+  // Set up all RX and TX queues and start the device. This can't be done
+  // later on a per-thread basis since we must start the device to use any
+  // queue. Once the device is started, more queues cannot be added without
+  // stopping and reconfiguring the device.
+  printf("num_threads = %zu\n", FLAGS_num_threads);
   for (size_t i = 0; i < FLAGS_num_threads; i++) {
-    // We won't use DPDK's lcore threads, so mempool cache won't work. Instead,
-    // use per-thread pools with zero cached mbufs
-    std::string pname = "mempool-" + std::to_string(i);
-    mempools[i] =
-        rte_pktmbuf_pool_create(pname.c_str(), kAppNumMbufs, kAppZeroCacheMbufs,
-                                0, kAppMbufSize, kAppNumaNode);
-    rt_assert(mempools[i] != nullptr,
-              "Mempool create failed " + std::string(rte_strerror(rte_errno)));
+    std::string pname =
+        "mempool-erpc-" + std::to_string(kAppPortId) + "-" + std::to_string(i);
+    mempool_arr[kAppPortId][i] =
+        rte_pktmbuf_pool_create(pname.c_str(), kAppNumMbufs, 0 /* cache */,
+                                0 /* priv size */, kAppMbufSize, kAppNumaNode);
+    rt_assert(mempool_arr[kAppPortId][i] != nullptr, "Mempool create failed:");
 
-    // XXX: Are these thresh and txq_flags value optimal?
     rte_eth_rxconf eth_rx_conf;
     memset(&eth_rx_conf, 0, sizeof(eth_rx_conf));
     eth_rx_conf.rx_thresh.pthresh = 8;
@@ -305,9 +362,12 @@ int main(int argc, char **argv) {
     eth_rx_conf.rx_thresh.wthresh = 0;
     eth_rx_conf.rx_free_thresh = 0;
     eth_rx_conf.rx_drop_en = 0;
-    ret = rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRxRingDesc, kAppNumaNode,
-                                 &eth_rx_conf, mempools[i]);
-    rt_assert(ret == 0, "Failed to setup RX queue " + std::to_string(i));
+
+    int ret =
+        rte_eth_rx_queue_setup(kAppPortId, i, kAppNumRxRingDesc, kAppNumaNode,
+                               &eth_rx_conf, mempool_arr[kAppPortId][i]);
+    rt_assert(ret == 0, "Failed to setup RX queue: " + std::to_string(i) +
+                            ". Error " + strerror(-1 * ret));
 
     rte_eth_txconf eth_tx_conf;
     memset(&eth_tx_conf, 0, sizeof(eth_tx_conf));
@@ -320,10 +380,35 @@ int main(int argc, char **argv) {
 
     ret = rte_eth_tx_queue_setup(kAppPortId, i, kAppNumTxRingDesc, kAppNumaNode,
                                  &eth_tx_conf);
-    rt_assert(ret == 0, "Failed to setup TX queue " + std::to_string(i));
+    rt_assert(ret == 0, "Failed to setup TX queue: " + std::to_string(i));
 
-    if (kInstallFlowRules) add_filter_rule(i, kBaseUDPPort + i);
+    printf("Created RX and TX queue for thread %zu\n", i);
   }
+
+  ///
+  static constexpr size_t kNEntries = 64;
+  static constexpr size_t nb_entries = kNEntries / RTE_RETA_GROUP_SIZE;
+  struct rte_eth_rss_reta_entry64 reta_entries[nb_entries];
+  struct rte_eth_rss_reta_entry64 *reta;
+
+  for (size_t entry = 0; entry < nb_entries; entry++) {
+    reta = &reta_entries[entry];
+    /* reset RSS redirection table */
+    memset(reta, 0, sizeof(*reta));
+    reta->mask = 0xffffffffffffffffULL;
+  }
+
+  ret = rte_eth_dev_rss_reta_query(kAppPortId, reta_entries, kNEntries);
+  if (ret != 0) {
+    printf("Error getting reta info\n");
+  } else {
+    printf("Got reta info\n");
+  }
+  //
+
+  uint16_t mtu;
+  rte_eth_dev_get_mtu(kAppPortId, &mtu);
+  printf("Initial MTU = %u\n", mtu);
 
   ret = rte_eth_dev_set_mtu(kAppPortId, kAppMTU);
   rt_assert(ret >= 0, "Failed to set MTU");
@@ -343,7 +428,8 @@ int main(int argc, char **argv) {
     if (FLAGS_is_sender == 0) {
       thread_arr[i] = std::thread(receiver_thread_func, i);
     } else {
-      thread_arr[i] = std::thread(sender_thread_func, mempools[i], i);
+      thread_arr[i] =
+          std::thread(sender_thread_func, mempool_arr[kAppPortId][i], i);
     }
 
     // Bind thread i to core i
