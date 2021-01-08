@@ -20,6 +20,8 @@ static_assert(RTE_VER_YEAR >= 19, "DPDK 19.11 required");
 /// mempool_arr[i][j] is the mempool to use for port i, queue j
 rte_mempool *mempool_arr[RTE_MAX_ETHPORTS][16];
 
+static constexpr size_t kNumRssRetaEntries = 512;
+static constexpr size_t kTargetQueue = 3;
 static constexpr bool kAppTwoSegs = false;
 static constexpr bool kAppVerbose = true;
 
@@ -72,6 +74,44 @@ static constexpr size_t kAppMbufSize =
     (2048 + static_cast<uint32_t>(sizeof(struct rte_mbuf)) +
      RTE_PKTMBUF_HEADROOM);
 
+/**
+ * @brief Return a source UDP port for which the RSS target queue at the remote
+ * receiver will be remote_queue_id. This assumes that the remote machine has
+ * FLAGS_num_threads RX queues.
+ *
+ * ntuple arguments and the return value are in host byte order
+ */
+static uint16_t get_udp_src_port_for_target_queue(size_t remote_queue_id,
+                                                  uint32_t src_ip,
+                                                  uint32_t dst_ip,
+                                                  uint16_t dst_port) {
+  uint16_t src_port = 0;
+  bool found = false;
+  for (; src_port < UINT16_MAX; src_port++) {
+    union rte_thash_tuple tuple;
+    tuple.v4.src_addr = src_ip;
+    tuple.v4.dst_addr = dst_ip;
+    tuple.v4.sport = src_port;
+    tuple.v4.dport = dst_port;
+    uint32_t rss_l3l4 = rte_softrss(reinterpret_cast<uint32_t *>(&tuple),
+                                    RTE_THASH_V4_L4_LEN, default_rss_key);
+
+    size_t target_queue = (rss_l3l4 % kNumRssRetaEntries) % FLAGS_num_threads;
+    if (target_queue == remote_queue_id) {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    printf("Failed to find src port that targets remote queue %zu\n",
+           remote_queue_id);
+  } else {
+    printf("src_port %u targets remote queue %zu\n", src_port, remote_queue_id);
+  }
+  return src_port;
+}
+
 void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
   // mbufs for first and second segment
   rte_mbuf *tx_mbufs[kAppTxBatchSize];
@@ -104,10 +144,11 @@ void sender_thread_func(struct rte_mempool *pktmbuf_pool, size_t thread_id) {
 
       gen_eth_header(eth_hdr, client_mac, server_mac);
       gen_ipv4_header(ip_hdr, client_ip, server_ip, kAppDataSize);
-      gen_udp_header(udp_hdr, kBaseUDPPort + fastrand(seed) % 8,
-                     kBaseUDPPort + fastrand(seed) % 8, kAppDataSize);
-      udp_hdr->dst_port =
-          htons(kBaseUDPPort + fastrand(seed) % FLAGS_num_threads);
+
+      const uint16_t dst_port = kBaseUDPPort + fastrand(seed) % 32;
+      const uint16_t src_port = get_udp_src_port_for_target_queue(
+          kTargetQueue, ntohl(client_ip), ntohl(server_ip), dst_port);
+      gen_udp_header(udp_hdr, src_port, dst_port, kAppDataSize);
 
       if (!kAppTwoSegs) {
         tx_mbufs[i]->nb_segs = 1;
@@ -196,7 +237,7 @@ void receiver_thread_func(size_t thread_id) {
 
         std::ostringstream ret;
         source_port_set.insert(ntohs(udp_hdr->src_port));
-        rss_hash_set.insert(rx_pkts[i]->hash.rss);
+        rss_hash_set.insert((rx_pkts[i]->hash.rss % kNumRssRetaEntries));
         ret << "Thread " << thread_id << " hash set {";
         for (auto &h : rss_hash_set) ret << h << ", ";
         ret << "}, source port set {";
@@ -385,27 +426,6 @@ int main(int argc, char **argv) {
     printf("Created RX and TX queue for thread %zu\n", i);
   }
 
-  ///
-  static constexpr size_t kNEntries = 64;
-  static constexpr size_t nb_entries = kNEntries / RTE_RETA_GROUP_SIZE;
-  struct rte_eth_rss_reta_entry64 reta_entries[nb_entries];
-  struct rte_eth_rss_reta_entry64 *reta;
-
-  for (size_t entry = 0; entry < nb_entries; entry++) {
-    reta = &reta_entries[entry];
-    /* reset RSS redirection table */
-    memset(reta, 0, sizeof(*reta));
-    reta->mask = 0xffffffffffffffffULL;
-  }
-
-  ret = rte_eth_dev_rss_reta_query(kAppPortId, reta_entries, kNEntries);
-  if (ret != 0) {
-    printf("Error getting reta info\n");
-  } else {
-    printf("Got reta info\n");
-  }
-  //
-
   uint16_t mtu;
   rte_eth_dev_get_mtu(kAppPortId, &mtu);
   printf("Initial MTU = %u\n", mtu);
@@ -421,6 +441,31 @@ int main(int argc, char **argv) {
   rte_eth_link_get(kAppPortId, &link);
   rt_assert(link.link_status > 0, "Failed to detect link");
   printf("Link bandwidth = %u Mbps\n", link.link_speed);
+
+  // Get and print the RSS indirection table
+  static constexpr size_t kNumRetaGroups =
+      kNumRssRetaEntries / RTE_RETA_GROUP_SIZE;
+  struct rte_eth_rss_reta_entry64 reta_entries[kNumRetaGroups];
+
+  for (size_t entry = 0; entry < kNumRetaGroups; entry++) {
+    struct rte_eth_rss_reta_entry64 *reta = &reta_entries[entry];
+    memset(reta, 0, sizeof(*reta));
+    reta->mask = 0xffffffffffffffffULL;
+  }
+
+  ret =
+      rte_eth_dev_rss_reta_query(kAppPortId, reta_entries, kNumRssRetaEntries);
+  if (ret != 0) {
+    printf("Error getting reta info, error = %s\n", strerror(-1 * ret));
+  } else {
+    printf("Got reta info\n");
+    for (size_t i = 0; i < kNumRetaGroups; i++) {
+      for (size_t j = 0; j < RTE_RETA_GROUP_SIZE; j++) {
+        printf("%u ", reta_entries[i].reta[j]);
+      }
+    }
+    printf("\n");
+  }
 
   // rte_eth_promiscuous_enable(kAppPortId);
   auto thread_arr = new std::thread[FLAGS_num_threads];

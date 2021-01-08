@@ -59,6 +59,7 @@ static std::string mac_to_string(const uint8_t* mac) {
   return ret.str();
 }
 
+// Returns the IP address in network byte order
 static uint32_t ipv4_from_str(const char* ip) {
   uint32_t addr;
   int ret = inet_pton(AF_INET, ip, &addr);
